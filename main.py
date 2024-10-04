@@ -5,7 +5,8 @@ import pandas as pd
 import math
 import requests
 import bs4
-import wget
+from zipfile import ZipFile
+import os
 
 class Vector2:
     def __init__(self, x, y):
@@ -66,12 +67,49 @@ def get_data(station, day, month, year):
 
     return df
 
+def extract_zip(zip):
+    print(type(zip.namelist()))
+    # return { name: zip.read(name) for name in zip.namelist() }
+
+def naps_data(year):
+    local_path = f"./data/naps/PM25_{year}.zip"
+    # check local store
+    if os.path.exists(local_path):
+        data = open(local_path, "rb")
+    else:
+        url = f"https://data-donnees.az.ec.gc.ca/api/file?path=%2Fair%2Fmonitor%2Fnational-air-pollution-surveillance-naps-program%2FData-Donnees%2F{year}%2FIntegratedData-DonneesPonctuelles%2F{year}_NAPSReferenceMethodPM25-PM25MethodeReferenceSNPA.zip"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        }
+        response = requests.get(url, headers=headers)
+        assert response.status_code == 200
+        data = BytesIO(response.content)
+
+        f = open(local_path, "x")
+        f.write(response.content)
+        f.close()
+    
+        zip = ZipFile(data)
+        
+        files = zip.namelist()
+        out = []
+        for name in files:
+            check = '_FR' in name or name.endswith(".xlsx")
+            if not check:
+                out.append(name)
+        files = out
+    
+    #file = zip.read(files[0])
+    #df = pd.read_csv(BytesIO(file))
+    #print(df.head())
+    
 def main():
     station = Stations.get_station_with_name("FOGGY LO")
     print(f'Station ID: {station['Station ID']}')
     print(f'Climate ID: {station['Climate ID']}')
-    data = get_data(station, 24, 9, 2024)
-    print(data['Wind Spd (km/h)'])
+#    data = get_data(station, 24, 9, 2024)
+#    print(data['Wind Spd (km/h)'])
+    naps_data(2023)
     
 if __name__ == '__main__':
     main()
