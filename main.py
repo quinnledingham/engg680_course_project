@@ -49,29 +49,43 @@ class Stations:
     @classmethod
     def get_station_with_name(self, name):
         ids = self.df.index[self.df['Name'] == name].tolist()
+        if not ids:
+            print(f'Did not find {name}\n')
         return Stations.get_station(ids[0])
 
-def get_data(station, day, month, year):
-    local_path = f"./data_cache/climate_data/{station['Station ID']}_{year}_{month}.csv"
-
-    if not os.path.exists(local_path):
-        # this link returns the whole month regardless of day specified
-        url = f"https://climate.weather.gc.ca/climate_data/bulk_data_e.html?format=csv"\
-              f"&stationID={station['Station ID']}"\
-              f"&Year={year}"\
-              f"&Month={month}"\
-              f"&Day=1"\
-              f"&timeframe=1"    
+class Station:
+    df = pd.DataFrame()
     
-        response = requests.get(url)
+    def __init__(self, name):
+        self.info = Stations.get_station_with_name(name)
 
-        data = BytesIO(response.content)
-        df = pd.read_csv(data)
-        df.to_csv(local_path)
-    else:
-        df = pd.read_csv(local_path)
+    def print(self):
+        print(self.info)
+        
+    def climate_data(self, day=0, month=0, year=0):
+        local_path = f"./data_cache/climate_data/{self.info['Station ID']}_{year}_{month}.csv"
 
-    return df
+        if not os.path.exists(local_path):
+            # this link returns the whole month regardless of day specified
+            url = f"https://climate.weather.gc.ca/climate_data/bulk_data_e.html?format=csv"\
+                  f"&stationID={self.info['Station ID']}"\
+                  f"&Year={year}"\
+                  f"&Month={month}"\
+                  f"&Day=1"\
+                  f"&timeframe=1"    
+
+            print(url)
+            response = requests.get(url)
+            assert response.status_code == 200
+
+            data = BytesIO(response.content)
+            df = pd.read_csv(data)
+            df.to_csv(local_path)
+        else:
+            df = pd.read_csv(local_path)
+
+        self.df = pd.concat([self.df, df], ignore_index=True)
+        return df
 
 def naps_data(day=0, month=0, year=0):
     local_path = f"./data_cache/naps/{year}.csv"
@@ -112,11 +126,11 @@ def create_data_cache():
 def main():    
     create_data_cache()
     
-    station = Stations.get_station_with_name("FOGGY LO")
-    print(f'Station ID: {station['Station ID']}')
-    print(f'Climate ID: {station['Climate ID']}')
-    data = get_data(station, 24, 9, 2024)
-    # print(data['Wind Spd (km/h)'])
+    station = Station("DISCOVERY ISLAND")
+    station.print()
+    station.climate_data(2, 3, 2024)
+    station.climate_data(24, 9, 2024)
+    
     print(naps_data(year=2021))
     
 if __name__ == '__main__':
