@@ -9,40 +9,14 @@ import bs4
 from zipfile import ZipFile
 import os
 import csv
-
-class Vector2:
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-
-    def print(self):
-        print(f'{self.x}, {self.y}')
-
-    @staticmethod
-    def distance(a, b):
-        return math.sqrt((b.x - a.x)**2 + (b.y - a.y)**2)
-
-api_host = 'https://climate.weather.gc.ca'
+import shapefile
     
 class Stations:
     df = pd.read_csv('Station Inventory EN.csv')
 
     @classmethod
-    def get_coordinates(self, row):
-        latitude = self.df.iloc[row]['Latitude (Decimal Degrees)']
-        longitude = self.df.iloc[row]['Longitude (Decimal Degrees)']
-        return Vector2(latitude, longitude)
-
-    @classmethod
     def print(self):
         print(self.df)
-
-    # used to find stations close to low air quality
-    # find the num stations closest to position
-    @classmethod
-    def find_closest_stations(self, position, num):
-        distance = Vector2.distance(position, Stations.get_coordinates(0))
-        print(distance)
 
     @classmethod
     def get_station(self, row):
@@ -95,8 +69,7 @@ def naps_data(day=0, month=0, year=0):
     # check local store
     if not os.path.exists(local_path):
         # data comes in zip by year
-        #url = f"https://data-donnees.az.ec.gc.ca/api/file?path=%2Fair%2Fmonitor%2Fnational-air-pollution-surveillance-naps-program%2FData-Donnees%2F{year}%2FIntegratedData-DonneesPonctuelles%2F{year}_NAPSReferenceMethodPM25-PM25MethodeReferenceSNPA.zip"
-        url = f"https://data-donnees.az.ec.gc.ca/api/file?path=%2Fair%2Fmonitor%2Fnational-air-pollution-surveillance-naps-program%2FData-Donnees%2F{year}%2FContinuousData-DonneesContinu%2FHourlyData-DonneesHoraires%2FPM25_{year}.csv"
+        url = f"https://data-donnees.az.ec.gc.ca/api/file?path=%2Fair%2Fmonitor%2Fnational-air-pollution-surveillance-naps-program%2FData-Donnees%2F{year}%2FIntegratedData-DonneesPonctuelles%2F{year}_NAPSReferenceMethodPM25-PM25MethodeReferenceSNPA.zip"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
         }
@@ -152,12 +125,49 @@ def naps_cont_data(day=0, month=0, year=0):
     return df
     
 
+
+class NFDB:
+    shp_file = None # where to store the shape file
+
+    def load_shp_file(self):
+        if self.shp_file is None:
+            self.shp_file = shapefile.Reader("NFDB_point.zip")
+    
+    def data(self, year):
+        local_csv_path = f'./data_cache/fires/{year}.csv'
+        
+        if not os.path.exists(local_csv_path):
+            self.load_shp_file()
+            
+            records = []
+            shps = []
+            index = 0
+            count = len(self.shp_file.shapes())
+    
+            while index < count:
+                r = self.shp_file.record(index)
+                if r.YEAR == year:
+                    records.append(r)
+                    shps.append(self.shp_file.shape(index))
+
+                index += 1
+    
+            fields = [x[0] for x in self.shp_file.fields][1:]
+            df = pd.DataFrame(columns=fields, data=records)
+            df = df.assign(coords=shps)
+    
+            df.to_csv(local_csv_path)
+        else:
+            df = pd.read_csv(local_csv_path)
+        
+        return df
+
 def create_data_cache():
     paths = ["./data_cache", "./data_cache/naps", "./data_cache/climate_data/"]
     for path in paths:
         if not os.path.exists(path):
             os.makedirs(path)
-
+            
 def main():    
     create_data_cache()
     
@@ -165,8 +175,13 @@ def main():
     #station.print()
     #station.climate_data(2, 3, 2024)
     #station.climate_data(24, 9, 2024)
-    
-    #print(naps_data(year=2023))
+
+    fire_db = NFDB()
+    fires_df = fire_db.data(2022)
+    fires_df = fire_db.data(2021)
+    print(fires_df)
+            
+    print(naps_data(year=2023))
     print(naps_cont_data(year=2021))
     
 if __name__ == '__main__':
