@@ -10,7 +10,13 @@ from zipfile import ZipFile
 import os
 import csv
 import shapefile
-    
+from geopy import distance
+
+from naps import Naps
+
+def point_distance(point1, point2):
+    return distance.distance(point1, point2).m
+
 class Stations:
     df = pd.read_csv('Station Inventory EN.csv')
 
@@ -34,6 +40,9 @@ class Station:
     
     def __init__(self, name):
         self.info = Stations.get_station_with_name(name)
+
+    def get_coords():
+        return [self.info['Latitude (Decimal Degrees)'], self.info['Longitude (Decimal Degrees)']]
 
     def print(self):
         print(self.info)
@@ -63,70 +72,8 @@ class Station:
         self.df = pd.concat([self.df, df], ignore_index=True)
         return df
 
-def naps_data(day=0, month=0, year=0):
-    local_path = f"./data_cache/naps/{year}.csv"
-    
-    # check local store
-    if not os.path.exists(local_path):
-        # data comes in zip by year
-        url = f"https://data-donnees.az.ec.gc.ca/api/file?path=%2Fair%2Fmonitor%2Fnational-air-pollution-surveillance-naps-program%2FData-Donnees%2F{year}%2FIntegratedData-DonneesPonctuelles%2F{year}_NAPSReferenceMethodPM25-PM25MethodeReferenceSNPA.zip"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-        }
-        response = requests.get(url, headers=headers)
-        assert response.status_code == 200
-
-        # write zip to csv in data cache
-        res_data = BytesIO(response.content)
-        in_zip = ZipFile(res_data)
-
-        files = []
-        for filename in in_zip.namelist():
-            check = '_FR' in filename or filename.endswith(".xlsx")
-            if not check:
-                file = in_zip.read(filename)
-                files.append(BytesIO(file))
-        in_zip.close()
-        df = pd.concat(map(pd.read_csv, files), ignore_index=True)
-        df.to_csv(local_path)
-        
-    df = pd.read_csv(local_path)
-    return df
-
-def remove_lines_from_csv(input_file, output_file, lines_to_remove):
-    #with open(input_file, 'r', newline='', encoding='utf-8') as infile:
-    reader = csv.reader(input_file)
-    # Skip the specified number of lines
-    for _ in range(lines_to_remove):
-        next(reader)
-
-    # Write the remaining lines to the output file
-    with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
-        writer = csv.writer(outfile)
-        for row in reader:
-            writer.writerow(row)
-                                                                                                                        
-def naps_cont_data(day=0, month=0, year=0):
-    local_path = f"./data_cache/naps/PM2.5_{year}.csv"
-    
-    # check local store
-    if not os.path.exists(local_path):
-        # data comes in zip by year
-        url = f"https://data-donnees.az.ec.gc.ca/api/file?path=%2Fair%2Fmonitor%2Fnational-air-pollution-surveillance-naps-program%2FData-Donnees%2F{year}%2FContinuousData-DonneesContinu%2FHourlyData-DonneesHoraires%2FPM25_{year}.csv"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-        }
-        response = requests.get(url, headers=headers)
-        assert response.status_code == 200
-
-        remove_lines_from_csv(StringIO(response.content.decode()), local_path, 7)
-        
-    df = pd.read_csv(local_path)
-    return df
-    
-
-
 class NFDB:
+    # https://cwfis.cfs.nrcan.gc.ca/datamart
     shp_file = None # where to store the shape file
 
     def load_shp_file(self):
@@ -162,27 +109,26 @@ class NFDB:
         
         return df
 
+
 def create_data_cache():
     paths = ["./data_cache", "./data_cache/naps", "./data_cache/climate_data/"]
     for path in paths:
         if not os.path.exists(path):
             os.makedirs(path)
-            
+
 def main():    
     create_data_cache()
     
-    #station = Station("CALGARY INTL A")
-    #station.print()
-    #station.climate_data(2, 3, 2024)
-    #station.climate_data(24, 9, 2024)
+    station = Station("CALGARY INTL A")
 
-    fire_db = NFDB()
-    fires_df = fire_db.data(2022)
-    fires_df = fire_db.data(2021)
-    print(fires_df)
-            
-    print(naps_data(year=2023))
-    print(naps_cont_data(year=2021))
+    training_data = pd.DataFrame(columns=['Current', 'Target'])
+    naps_2021 = Naps.data(year=2021)
+    for i in range(10):
+        day = naps_2021.iloc[i]
+        new_train = { "Current": Naps.PM25(day, 12), "Target": Naps.PM25(day, 17) }
+        training_data.loc[i] = new_train
+    print(training_data)
+    
     
 if __name__ == '__main__':
     main()
