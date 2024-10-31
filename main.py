@@ -109,6 +109,7 @@ class NFDB:
         
         return df
 
+import pickle
 
 def create_data_cache():
     paths = ["./data_cache", "./data_cache/naps", "./data_cache/climate_data/"]
@@ -119,16 +120,20 @@ def create_data_cache():
 def main():    
     create_data_cache()
     
-    station = Station("CALGARY INTL A")
+    #station = Station("CALGARY INTL A")
 
-    training_data = pd.DataFrame(columns=['Current', 'Target'])
-    naps_2021 = Naps.data(year=2021)
-    for i in range(10):
-        day = naps_2021.iloc[i]
-        new_train = { "Current": Naps.PM25(day, 12), "Target": Naps.PM25(day, 17) }
-        training_data.loc[i] = new_train
-    print(training_data)
-    
+    #training_data = pd.DataFrame(columns=['Current', 'Target'])
+    #naps_2021 = Naps.data(year=2021)
+    #for i in range(10):
+        #day = naps_2021.iloc[i]
+        #new_train = { "Current": Naps.PM25(day, 12), "Target": Naps.PM25(day, 17) }
+        #training_data.loc[i] = new_train
+    #print(training_data)
+    data = Naps.get_year(2021)
+    f = open("./data_cache/test.data", "wb")
+    pickle.dump(data, f)
+    f.close()
+
     
 if __name__ == '__main__':
     main()

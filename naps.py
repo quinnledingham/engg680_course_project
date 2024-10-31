@@ -15,19 +15,19 @@ class Naps:
     @classmethod
     def PM25(self, day, hour):
         value = 0
-        if (hour < 12):
+        if (hour < 10):
             value = day[f'H0{hour}//H0{hour}']
         else:
             value = day[f'H{hour}//H{hour}']
 
-        if value < 0 
+        if value < 0 :
             value = 0 # set -999 values to 0
 
         return value
 
     @classmethod
     def coords(self, day):
-        return [naps['Latitude//Latitude'], naps['Longitude//Longitude']]
+        return [day['Latitude//Latitude'], day['Longitude//Longitude']]
     
     def __remove_lines_from_csv(input_file, output_file, lines_to_remove):
         reader = csv.reader(input_file)
@@ -60,4 +60,18 @@ class Naps:
             remove_lines_from_csv(StringIO(response.content.decode()), local_path, 7)
         
         df = pd.read_csv(local_path)
-        return df
+        return df            
+
+    def get_year(year):
+        max = 0
+        df = Naps.data(year=year)
+        data = list()
+        for index, row in df.iterrows():
+            row = df.iloc[index]
+            for i in range(1, 25):
+                value = Naps.PM25(row, i)
+                if value > max:
+                    max = value
+                data.append(value)
+        print(f"Max PM2.5: {max}")
+        return data
