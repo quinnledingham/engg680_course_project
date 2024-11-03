@@ -3,6 +3,7 @@ import os
 import csv
 from io import BytesIO
 from io import StringIO
+import requests as req
 
 class Naps:
     stations_df = pd.read_csv('StationsNAPS.csv')
@@ -29,7 +30,7 @@ class Naps:
     def coords(self, day):
         return [day['Latitude//Latitude'], day['Longitude//Longitude']]
     
-    def __remove_lines_from_csv(input_file, output_file, lines_to_remove):
+    def remove_lines_from_csv(self, input_file, output_file, lines_to_remove):
         reader = csv.reader(input_file)
         # Skip the specified number of lines
         for _ in range(lines_to_remove):
@@ -40,8 +41,8 @@ class Naps:
             writer = csv.writer(outfile)
             for row in reader:
                 writer.writerow(row)
-                
-    def data(day=0, month=0, year=0):
+   
+    def data(self, day=0, month=0, year=0):
         local_path = f"./data_cache/naps/PM2.5_{year}.csv"
     
         # check local store
@@ -51,20 +52,20 @@ class Naps:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             }
-            response = requests.get(url, headers=headers)
+            response = req.get(url, headers=headers)
             assert response.status_code == 200
 
             #with open(f'{year}.csv', 'w', encoding="utf-8") as file:
             #    file.write(response.content.decode())
             
-            remove_lines_from_csv(StringIO(response.content.decode()), local_path, 7)
+            self.remove_lines_from_csv(StringIO(response.content.decode()), local_path, 7)
         
         df = pd.read_csv(local_path)
         return df            
 
-    def get_year(year):
+    def get_year(self, year):
         max = 0
-        df = Naps.data(year=year)
+        df = self.data(year=year)
         data = list()
         for index, row in df.iterrows():
             row = df.iloc[index]

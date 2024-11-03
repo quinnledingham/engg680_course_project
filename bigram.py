@@ -116,10 +116,9 @@ for iter in range(max_iters):
 context = torch.ones((1, 1), dtype=torch.long, device=device)
 print(context)
 #print(m.generate(context, max_new_tokens=24)[0].tolist())
-# %%
 
 #%%
-context = torch.tensor([[15, 10, 4, 1, 8, 11, 9, 9, 7, 6, 6, 5, 5, 5, 5, 5, 6, 7, 10, 8, 7, 9, 9, 8]], dtype=torch.long, device=device)
+context = torch.tensor([[15, 10, 4, 1, 8, 11, 9, 9, 7, 6, 6, 5, 5, 5, 1000, 5, 6, 7, 10, 8, 7, 9, 9, 8]], dtype=torch.long, device=device)
 print(m.generate(context, max_new_tokens=24)[0].tolist())
 
 # %%

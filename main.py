@@ -4,7 +4,7 @@ from io import StringIO
 
 import pandas as pd
 import math
-import requests
+import requests as req
 import bs4
 from zipfile import ZipFile
 import os
@@ -60,7 +60,7 @@ class Station:
                   f"&timeframe=1"    
 
             print(url)
-            response = requests.get(url)
+            response = req.get(url)
             assert response.status_code == 200
 
             data = BytesIO(response.content)
@@ -129,7 +129,8 @@ def main():
         #new_train = { "Current": Naps.PM25(day, 12), "Target": Naps.PM25(day, 17) }
         #training_data.loc[i] = new_train
     #print(training_data)
-    data = Naps.get_year(2021)
+    naps = Naps()
+    data = naps.get_year(2021)
     f = open("./data_cache/test.data", "wb")
     pickle.dump(data, f)
     f.close()
