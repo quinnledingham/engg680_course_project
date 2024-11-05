@@ -66,13 +66,23 @@ class Naps:
     def get_year(self, year):
         max = 0
         df = self.data(year=year)
-        data = list()
+        
+        pm25_data = list()
+        coords_data = list()
+        
         for index, row in df.iterrows():
             row = df.iloc[index]
             for i in range(1, 25):
-                value = Naps.PM25(row, i)
-                if value > max:
-                    max = value
-                data.append(value)
+                pm25 = Naps.PM25(row, i)
+                if pm25 > max:
+                    max = pm25
+
+                pm25_data.append(pm25)
+                coords_data.append(Naps.coords(row))
         print(f"Max PM2.5: {max}")
-        return data
+        return pm25_data, coords_data
+    
+class Input:
+    def __init__(self, pm25, coords):
+        self.pm25_data = pm25
+        self.coords_data = coords

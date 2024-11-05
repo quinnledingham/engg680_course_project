@@ -13,6 +13,7 @@ import shapefile
 from geopy import distance
 
 from naps import Naps
+from naps import Input
 
 def point_distance(point1, point2):
     return distance.distance(point1, point2).m
@@ -130,9 +131,10 @@ def main():
         #training_data.loc[i] = new_train
     #print(training_data)
     naps = Naps()
-    data = naps.get_year(2021)
+    pm25_data, coords_data = naps.get_year(2021)
+    input = Input(pm25_data, coords_data)
     f = open("./data_cache/test.data", "wb")
-    pickle.dump(data, f)
+    pickle.dump(input, f)
     f.close()
 
     
