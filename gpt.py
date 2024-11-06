@@ -3,7 +3,6 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import intel_extension_for_pytorch as ipex
 
 import pickle
 from naps import Naps
@@ -32,7 +31,7 @@ max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device = 'xpu' if torch.xpu.is_available() else 'cpu'
+#device = 'xpu' if torch.xpu.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 384
 n_head = 6
@@ -44,52 +43,50 @@ vocab_size = 2000
 f = open("./data_cache/test.data", 'rb')
 input = pickle.load(f)
 
+naps_stations = input.station_ids
+
 # Train and test splits
 data = torch.tensor(input.pm25_data, dtype=torch.long)
-gps_data = torch.tensor(input.coords_data, dtype=torch.long)
+station_data = torch.tensor([naps_stations[stn] for stn in input.station_data], dtype=torch.long)
+
 n = int(0.75*len(data)) # first 90% will be train, rest val
 t = int(0.9*len(data))
 
-train_data = data[:n]
-val_data = data[n:t]
-test_data = data[t:]
+def split_data(data, n, t):
+    train= data[:n]
+    val = data[n:t]
+    test = data[t:]
+    return train, val, test
 
-gps_train_data = gps_data[:n]
-gps_val_data = gps_data[n:t]
-gps_test_data = gps_data[t:]
+train_data, val_data, test_data = split_data(data, n, t)
+stn_train, stn_val, stn_test = split_data(station_data, n, t)
 
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
-    if split == 'train':
-        data = train_data
-        gps_data = gps_train_data
-    elif split == 'val':
-        data = val_data
-        gps_data = gps_val_data
-    elif split == 'test':
-        data = test_data
-        gps_data = gps_test_data
+    data = train_data if split == 'train' else val_data
+    station_data = stn_train if split == 'train' else stn_val
 
     ix = torch.randint(len(data) - block_size, (batch_size,))
 
     x = torch.stack([data[i:i+block_size] for i in ix])
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    lat = torch.stack([gps_data[i:i+block_size, 0] for i in ix])
-    lon = torch.stack([gps_data[i:i+block_size, 1] for i in ix])
+    naps_stn = torch.stack([station_data[i:i+block_size] for i in ix])
+    #lat = torch.stack([gps_data[i:i+block_size, 0] for i in ix])
+    #lon = torch.stack([gps_data[i:i+block_size, 1] for i in ix])
 
-    x, y, lat, lon = x.to(device), y.to(device), lat.to(device), lon.to(device)
-    return x, y, lat, lon
+    x, y, naps_stn = x.to(device), y.to(device), naps_stn.to(device)
+    return x, y, naps_stn
 
 @torch.no_grad()
-def estimate_loss(model):
+def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y, lat, lon = get_batch(split)
-            logits, loss = model(X, Y)
+            X, Y, naps_stn = get_batch(split)
+            logits, loss = model(X, Y, naps_stn)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -206,11 +203,13 @@ class GPTLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.spatial_embedding_table = GPSSpatialEmbedding()
+        self.naps_station_embedding_table = nn.Embedding(len(naps_stations), n_embd)
+        #self.spatial_embedding_table = GPSSpatialEmbedding()
 
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = nn.Linear(n_embd, vocab_size)
+        #self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(n_embd, 1)
 
         # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
@@ -223,18 +222,19 @@ class GPTLanguageModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None, lat=None, lon=None):
+    def forward(self, idx, targets=None, naps_stn=None):
         B, T = idx.shape
 
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        stn_emb = self.naps_station_embedding_table(naps_stn)
         
-        if lat is not None:
-            spatial_emb = self.spatial_embedding_table(lat, lon)
-            x = tok_emb + pos_emb + spatial_emb
-        else:
-            x = tok_emb + pos_emb # (B,T,C)
+        #if lat is not None:
+        #    spatial_emb = self.spatial_embedding_table(lat, lon)
+        #    x = tok_emb + pos_emb + stn_emb
+        #else:
+        x = tok_emb + pos_emb + stn_emb # (B,T,C)
 
         x = self.blocks(x) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
@@ -243,20 +243,21 @@ class GPTLanguageModel(nn.Module):
         if targets is None:
             loss = None
         else:
-            B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
-            loss = F.mse_loss(logits, targets, reduction='mean')
+            #B, T, C = logits.shape
+            #logits = logits.view(B*T, C)
+            #targets = targets.view(B*T)
+            #loss = F.cross_entropy(logits, targets)
+            loss = F.mse_loss(logits.squeeze(-1), targets.float())
 
         return logits, loss
 
-    def generate(self, idx, lat, lon, max_new_tokens):
+    def generate(self, idx, naps_stn, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
             idx_cond = idx[:, -block_size:]
             # get the predictions
-            logits, loss = self(idx_cond, None, lat, lon)
+            logits, loss = self(idx_cond, None, naps_stn)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
@@ -267,37 +268,35 @@ class GPTLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
+torch.manual_seed(1337)
 
-def main():
-    torch.manual_seed(1337)
+model = GPTLanguageModel()
+m = model.to(device)
+# print the number of parameters in the model
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
-    model = GPTLanguageModel()
-    m = model.to(device)
-    # print the number of parameters in the model
-    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+# create a PyTorch optimizer
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-    # create a PyTorch optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+for iter in range(max_iters):
 
-    for iter in range(max_iters):
+    # every once in a while evaluate the loss on train and val sets
+    if iter % eval_interval == 0 or iter == max_iters - 1:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-        # every once in a while evaluate the loss on train and val sets
-        if iter % eval_interval == 0 or iter == max_iters - 1:
-            losses = estimate_loss(m)
-            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    # sample a batch of data
+    xb, yb, stn = get_batch('train')
 
-        # sample a batch of data
-        xb, yb, lat, lon = get_batch('train')
+    # evaluate the loss
+    logits, loss = model(xb, yb, stn)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
 
-        # evaluate the loss
-        logits, loss = model(xb, yb, lat, lon)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+torch.save(m.state_dict(), "./data_cache/gpt.model")
 
-    torch.save(m.state_dict(), "./data_cache/gpt.model")
-
-if __name__ == '__main__':
-    main()
+#if __name__ == '__main__':
+#   main()
 
 #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))

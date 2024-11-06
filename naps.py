@@ -68,21 +68,43 @@ class Naps:
         df = self.data(year=year)
         
         pm25_data = list()
-        coords_data = list()
+        station_data = list()
+        station_ids = {}
+        num = 0
         
         for index, row in df.iterrows():
             row = df.iloc[index]
+
+            if row['NAPS ID//Identifiant SNPA'] not in station_ids:
+                station_ids[row['NAPS ID//Identifiant SNPA']] = num
+                num += 1
+
             for i in range(1, 25):
                 pm25 = Naps.PM25(row, i)
                 if pm25 > max:
                     max = pm25
-
                 pm25_data.append(pm25)
-                coords_data.append(Naps.coords(row))
+
+                station_data.append(row['NAPS ID//Identifiant SNPA'])
+
+                
+
         print(f"Max PM2.5: {max}")
-        return pm25_data, coords_data
+        return pm25_data, station_data, station_ids
     
+    @classmethod
+    def get_station_table(self):
+        num = 0
+        station_ids = {}
+        for index, row in self.stations_df.iterrows():
+            if row['Status'] == 1 and row['PM_25_Continuous'] == 'X':
+                station_ids[row['NAPS_ID']] = num
+                num += 1
+
+        return station_ids
+
 class Input:
-    def __init__(self, pm25, coords):
+    def __init__(self, pm25, stations, station_ids):
         self.pm25_data = pm25
-        self.coords_data = coords
+        self.station_data = stations
+        self.station_ids = station_ids

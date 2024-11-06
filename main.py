@@ -130,9 +130,10 @@ def main():
         #new_train = { "Current": Naps.PM25(day, 12), "Target": Naps.PM25(day, 17) }
         #training_data.loc[i] = new_train
     #print(training_data)
+
     naps = Naps()
-    pm25_data, coords_data = naps.get_year(2021)
-    input = Input(pm25_data, coords_data)
+    pm25_data, station_data, station_ids = naps.get_year(2021)
+    input = Input(pm25_data, station_data, station_ids)
     f = open("./data_cache/test.data", "wb")
     pickle.dump(input, f)
     f.close()
