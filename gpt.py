@@ -5,25 +5,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import pickle
-from naps import Naps
-
 
 #%%
-'''
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('input.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
-
-# here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
-# create a mapping from characters to integers
-stoi = { ch:i for i,ch in enumerate(chars) }
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
-'''
-
 # hyperparameters
 batch_size = 64 # how many independent sequences will we process in parallel?
 block_size = 256 # what is the maximum context length for predictions?
@@ -40,57 +23,70 @@ dropout = 0.2
 vocab_size = 2000
 # ------------
 
-f = open("./data_cache/test.data", 'rb')
-input = pickle.load(f)
+class Input_Data:
+    # pm25_data is a list of pm2.5 values
+    # station_data is a list of NAPS_IDs, storing the id for each pm2.5 value
+    # station_ids is a dict converting NAPS_IDs to 0 - len(stations) for use in embedding
+    def __init__(self, pm25_data, station_data, station_ids):
+        self.pm25_data = pm25_data
+        self.station_data = station_data
+        self.station_ids = station_ids
 
-naps_stations = input.station_ids
+    def save_data(self, filepath):
+        f = open(filepath, "wb")
+        pickle.dump(self, f)
+        f.close()
 
-# Train and test splits
-data = torch.tensor(input.pm25_data, dtype=torch.long)
-station_data = torch.tensor([naps_stations[stn] for stn in input.station_data], dtype=torch.long)
+    # used like a constructor when using the data
+    @classmethod
+    def load_data(self, filepath):
+        f = open(filepath, 'rb')
+        self = pickle.load(f)
+        f.close()
+        return self
 
-n = int(0.75*len(data)) # first 90% will be train, rest val
-t = int(0.9*len(data))
+    def init_split(self):
+        pt_pm25_data = torch.tensor(self.pm25_data, dtype=torch.long)
+        pt_station_data = torch.tensor([self.station_ids[stn] for stn in self.station_data], dtype=torch.long)
 
-def split_data(data, n, t):
-    train= data[:n]
-    val = data[n:t]
-    test = data[t:]
-    return train, val, test
+        n = int(0.75*len(pt_pm25_data)) # first 90% will be train, rest val
+        t = int(0.9*len(pt_pm25_data))
 
-train_data, val_data, test_data = split_data(data, n, t)
-stn_train, stn_val, stn_test = split_data(station_data, n, t)
+        self.train_pm25, self.val_pm25, self.test_pm25 = self.split_data(pt_pm25_data, n, t)
+        self.train_stn, self.val_stn, self.test_stn = self.split_data(pt_station_data, n, t)
 
-# data loading
-def get_batch(split):
-    # generate a small batch of data of inputs x and targets y
-    data = train_data if split == 'train' else val_data
-    station_data = stn_train if split == 'train' else stn_val
+    def split_data(self, data, n, t):
+        train= data[:n]
+        val = data[n:t]
+        test = data[t:]
+        return train, val, test
 
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    # data loading
+    def get_batch(self, split):
+        # generate a small batch of data of inputs x and targets y
+        data = self.train_pm25 if split == 'train' else self.val_pm25
+        station_data = self.train_stn if split == 'train' else self.val_stn
+        
+        if split == 'test':
+            data = self.test_pm25
+            station_data = self.test_stn
 
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    naps_stn = torch.stack([station_data[i:i+block_size] for i in ix])
-    #lat = torch.stack([gps_data[i:i+block_size, 0] for i in ix])
-    #lon = torch.stack([gps_data[i:i+block_size, 1] for i in ix])
+        ix = torch.randint(len(data) - block_size, (batch_size,))
 
-    x, y, naps_stn = x.to(device), y.to(device), naps_stn.to(device)
-    return x, y, naps_stn
+        x = torch.stack([data[i:i+block_size] for i in ix])
+        y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+        naps_stn = torch.stack([station_data[i:i+block_size] for i in ix])
+        #lat = torch.stack([gps_data[i:i+block_size, 0] for i in ix])
+        #lon = torch.stack([gps_data[i:i+block_size, 1] for i in ix])
 
-@torch.no_grad()
-def estimate_loss():
-    out = {}
-    model.eval()
-    for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            X, Y, naps_stn = get_batch(split)
-            logits, loss = model(X, Y, naps_stn)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
-    model.train()
-    return out
+        if split == 'test':
+            i = ix[0]
+            x = torch.stack([data[i:i+12]])
+            y = torch.stack([data[i+12:i+24]])
+            naps_stn = torch.stack([station_data[i:i+12]])
+
+        x, y, naps_stn = x.to(device), y.to(device), naps_stn.to(device)
+        return x, y, naps_stn
 
 class Head(nn.Module):
     """ one head of self-attention """
@@ -198,12 +194,12 @@ class GPSSpatialEmbedding(nn.Module):
 
 class GPTLanguageModel(nn.Module):
 
-    def __init__(self):
+    def __init__(self, num_of_stations):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.naps_station_embedding_table = nn.Embedding(len(naps_stations), n_embd)
+        self.naps_station_embedding_table = nn.Embedding(num_of_stations, n_embd)
         #self.spatial_embedding_table = GPSSpatialEmbedding()
 
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
@@ -256,8 +252,10 @@ class GPTLanguageModel(nn.Module):
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
             idx_cond = idx[:, -block_size:]
+            stn_cond = naps_stn[:, -block_size:]
+
             # get the predictions
-            logits, loss = self(idx_cond, None, naps_stn)
+            logits, loss = self(idx_cond, None, stn_cond)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
@@ -266,37 +264,56 @@ class GPTLanguageModel(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+            naps_stn = torch.cat((naps_stn, torch.tensor([[naps_stn[0][0].tolist()]], dtype=torch.long, device=device)), dim=1)
         return idx
 
-torch.manual_seed(1337)
+@torch.no_grad()
+def estimate_loss(model, data):
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y, naps_stn = data.get_batch(split)
+            logits, loss = model(X, Y, naps_stn)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
 
-model = GPTLanguageModel()
-m = model.to(device)
-# print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+def main():
+    data = Input_Data.load_data("./data_cache/test.data")
+    data.init_split()
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    torch.manual_seed(1337)
 
-for iter in range(max_iters):
+    model = GPTLanguageModel(len(data.station_ids))
+    m = model.to(device)
+    # print the number of parameters in the model
+    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-    # sample a batch of data
-    xb, yb, stn = get_batch('train')
+    for iter in range(max_iters):
 
-    # evaluate the loss
-    logits, loss = model(xb, yb, stn)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+        # every once in a while evaluate the loss on train and val sets
+        if iter % eval_interval == 0 or iter == max_iters - 1:
+            losses = estimate_loss(model, data)
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-torch.save(m.state_dict(), "./data_cache/gpt.model")
+        # sample a batch of data
+        xb, yb, stn = data.get_batch('train')
 
-#if __name__ == '__main__':
-#   main()
+        # evaluate the loss
+        logits, loss = model(xb, yb, stn)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+    torch.save(m.state_dict(), "./data_cache/gpt.model")
+
+if __name__ == '__main__':
+    main()
 
 #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))

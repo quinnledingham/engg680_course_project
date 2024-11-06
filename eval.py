@@ -2,17 +2,25 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
-#%%
+import pickle
+from importlib import reload 
 from gpt import GPTLanguageModel
-from gpt import test_data
-from gpt import gps_data
+
+f = open("./data_cache/test.data", 'rb')
+input = pickle.load(f)
+input.init_split()
+
+X, y, stn = input.get_batch('test')
+print(X)
+print(y)
+print(stn)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 torch.no_grad()
-model = nn.Transformer(nhead=8, d_model=256, dropout=0.2, num_decoder_layers=6)
-model.load_state_dict(torch.load("./data_cache/pytorch.model", weights_only=True))
+#model = nn.Transformer(nhead=8, d_model=256, dropout=0.2, num_decoder_layers=6)
+model = GPTLanguageModel(len(input.station_ids))
+#model.load_state_dict(torch.load("./data_cache/gpt.model", weights_only=True))
 m = model.to(device)
 m.eval()
 #%%
@@ -70,4 +78,14 @@ print(beijing_pm2_5.variables)
 
 #%%
 print(y)
+
+# %%
+context = torch.tensor([[15, 10, 4, 1, 8, 11, 9, 9, 7, 6, 5, 5, 5, 5, 5, 5, 6, 7, 10, 8, 7, 9, 9, 8]], dtype=torch.long, device=device)
+station = torch.tensor([1], dtype=torch.long, device=device)
+station = station.repeat(1, len(context[0]))
+print(context.size())
+print(station.size())
+print(torch.tensor([[station[0][0].tolist()]]))
+print(m.generate(context, station, max_new_tokens=12)[0].tolist())
+
 # %%

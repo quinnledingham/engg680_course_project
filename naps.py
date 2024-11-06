@@ -85,9 +85,7 @@ class Naps:
                     max = pm25
                 pm25_data.append(pm25)
 
-                station_data.append(row['NAPS ID//Identifiant SNPA'])
-
-                
+                station_data.append(row['NAPS ID//Identifiant SNPA'])   
 
         print(f"Max PM2.5: {max}")
         return pm25_data, station_data, station_ids
@@ -102,9 +100,3 @@ class Naps:
                 num += 1
 
         return station_ids
-
-class Input:
-    def __init__(self, pm25, stations, station_ids):
-        self.pm25_data = pm25
-        self.station_data = stations
-        self.station_ids = station_ids
