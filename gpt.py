@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import intel_extension_for_pytorch as ipex
 
 import pickle
 from naps import Naps
@@ -31,6 +32,7 @@ max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'xpu' if torch.xpu.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 384
 n_head = 6
@@ -59,8 +61,15 @@ gps_test_data = gps_data[t:]
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
-    data = train_data if split == 'train' else val_data
-    gps_data = gps_train_data if split == 'train' else gps_val_data
+    if split == 'train':
+        data = train_data
+        gps_data = gps_train_data
+    elif split == 'val':
+        data = val_data
+        gps_data = gps_val_data
+    elif split == 'test':
+        data = test_data
+        gps_data = gps_test_data
 
     ix = torch.randint(len(data) - block_size, (batch_size,))
 
@@ -80,7 +89,7 @@ def estimate_loss(model):
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y, lat, lon = get_batch(split)
-            logits, loss = model(X, Y, lat, lon)
+            logits, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -237,7 +246,7 @@ class GPTLanguageModel(nn.Module):
             B, T, C = logits.shape
             logits = logits.view(B*T, C)
             targets = targets.view(B*T)
-            loss = F.cross_entropy(logits, targets)
+            loss = F.mse_loss(logits, targets, reduction='mean')
 
         return logits, loss
 

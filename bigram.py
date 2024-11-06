@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import intel_extension_for_pytorch as ipex
 
 import pickle
 from naps import Naps
@@ -14,18 +15,19 @@ max_iters = 3000
 eval_interval = 300
 learning_rate = 1e-2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'xpu' if torch.xpu.is_available() else 'cpu'
 eval_iters = 200
 # ------------
 
 torch.manual_seed(1337)
 
 f = open("./data_cache/test.data", 'rb')
-data = pickle.load(f)
+input = pickle.load(f)
 
 vocab_size = 2000
 
 # Train and test splits
-data = torch.tensor(data, dtype=torch.long)
+data = torch.tensor(input.pm25_data, dtype=torch.long)
 n = int(0.9 * len(data))
 train_data = data[:n]
 val_data = data[n:]
@@ -111,11 +113,20 @@ for iter in range(max_iters):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+
+torch.save(model.state_dict(), "./data_cache/bigram.model")
+
+
 #%%
+torch.no_grad()
+model = BigramLanguageModel(vocab_size)
+model.load_state_dict(torch.load("./data_cache/bigram.model", weights_only=True))
+m = model.to(device)
+m.eval()
+
 # generate from the model
 context = torch.ones((1, 1), dtype=torch.long, device=device)
-print(context)
-#print(m.generate(context, max_new_tokens=24)[0].tolist())
+print(m.generate(context, max_new_tokens=24)[0].tolist())
 
 #%%
 context = torch.tensor([[15, 10, 4, 1, 8, 11, 9, 9, 7, 6, 6, 5, 5, 5, 1000, 5, 6, 7, 10, 8, 7, 9, 9, 8]], dtype=torch.long, device=device)
