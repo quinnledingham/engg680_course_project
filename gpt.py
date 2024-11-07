@@ -5,6 +5,10 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import pickle
+import numpy as np
+import time
+
+start_time = time.time()
 
 #%%
 # hyperparameters
@@ -46,6 +50,9 @@ class Input_Data:
         return self
 
     def init_split(self):
+        self.pm25_mean = np.mean(self.pm25_data)
+        self.pm25_std = np.std(self.pm25_data)
+
         pt_pm25_data = torch.tensor(self.pm25_data, dtype=torch.long)
         pt_station_data = torch.tensor([self.station_ids[stn] for stn in self.station_data], dtype=torch.long)
 
@@ -80,10 +87,13 @@ class Input_Data:
         #lon = torch.stack([gps_data[i:i+block_size, 1] for i in ix])
 
         if split == 'test':
-            i = ix[0]
-            x = torch.stack([data[i:i+12]])
-            y = torch.stack([data[i+12:i+24]])
-            naps_stn = torch.stack([station_data[i:i+12]])
+            #i = ix[0]
+            #x = torch.stack([data[i:i+12]])
+            #y = torch.stack([data[i+12:i+24]])
+            #naps_stn = torch.stack([station_data[i:i+12]])
+            x = torch.stack([data[i:i+block_size] for i in ix])
+            y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+            naps_stn = torch.stack([station_data[i:i+block_size] for i in ix])
 
         x, y, naps_stn = x.to(device), y.to(device), naps_stn.to(device)
         return x, y, naps_stn
@@ -194,10 +204,14 @@ class GPSSpatialEmbedding(nn.Module):
 
 class GPTLanguageModel(nn.Module):
 
-    def __init__(self, num_of_stations):
+    def __init__(self, num_of_stations, pm25_mean, pm25_std):
         super().__init__()
+        self.pm25_mean = pm25_mean
+        self.pm25_std = pm25_std
+
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        #self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.pm25_projection = nn.Linear(1, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.naps_station_embedding_table = nn.Embedding(num_of_stations, n_embd)
         #self.spatial_embedding_table = GPSSpatialEmbedding()
@@ -222,7 +236,9 @@ class GPTLanguageModel(nn.Module):
         B, T = idx.shape
 
         # idx and targets are both (B,T) tensor of integers
-        tok_emb = self.token_embedding_table(idx) # (B,T,C)
+        #tok_emb = self.token_embedding_table(idx) # (B,T,C)
+        normalized_pm25 = (idx.float() - self.pm25_mean) / self.pm25_std
+        pm25_emb = self.pm25_projection(normalized_pm25.unsqueeze(-1))
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
         stn_emb = self.naps_station_embedding_table(naps_stn)
         
@@ -230,7 +246,7 @@ class GPTLanguageModel(nn.Module):
         #    spatial_emb = self.spatial_embedding_table(lat, lon)
         #    x = tok_emb + pos_emb + stn_emb
         #else:
-        x = tok_emb + pos_emb + stn_emb # (B,T,C)
+        x = pm25_emb + pos_emb + stn_emb # (B,T,C)
 
         x = self.blocks(x) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
@@ -243,11 +259,13 @@ class GPTLanguageModel(nn.Module):
             #logits = logits.view(B*T, C)
             #targets = targets.view(B*T)
             #loss = F.cross_entropy(logits, targets)
-            loss = F.mse_loss(logits.squeeze(-1), targets.float())
+            normalized_targets = (targets.float() - self.pm25_mean) / self.pm25_std
+            loss = F.mse_loss(logits.squeeze(-1), normalized_targets)
 
         return logits, loss
 
     def generate(self, idx, naps_stn, max_new_tokens):
+        generated_values = None
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
@@ -257,15 +275,21 @@ class GPTLanguageModel(nn.Module):
             # get the predictions
             logits, loss = self(idx_cond, None, stn_cond)
             # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
+            logits = logits[:, -1] # becomes (B, C)
             # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1) # (B, C)
+            #probs = F.softmax(logits, dim=-1) # (B, C)
             # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            #idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
-            naps_stn = torch.cat((naps_stn, torch.tensor([[naps_stn[0][0].tolist()]], dtype=torch.long, device=device)), dim=1)
-        return idx
+            denormalized_value = (logits * self.pm25_std) + self.pm25_mean
+            if generated_values is None:
+                generated_values = denormalized_value
+            else:
+                generated_values = torch.cat((generated_values, denormalized_value), dim=1)
+
+            idx = torch.cat((idx, denormalized_value.round()), dim=1) # (B, T+1)
+            naps_stn = torch.cat((naps_stn, naps_stn[:, :1]), dim=1)
+        return generated_values
 
 @torch.no_grad()
 def estimate_loss(model, data):
@@ -287,7 +311,7 @@ def main():
 
     torch.manual_seed(1337)
 
-    model = GPTLanguageModel(len(data.station_ids))
+    model = GPTLanguageModel(len(data.station_ids), data.pm25_mean, data.pm25_std)
     m = model.to(device)
     # print the number of parameters in the model
     print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
@@ -300,7 +324,7 @@ def main():
         # every once in a while evaluate the loss on train and val sets
         if iter % eval_interval == 0 or iter == max_iters - 1:
             losses = estimate_loss(model, data)
-            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - start_time}")
 
         # sample a batch of data
         xb, yb, stn = data.get_batch('train')
