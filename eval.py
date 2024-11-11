@@ -4,55 +4,42 @@ import torch.nn as nn
 from torch.nn import functional as F
 import pickle
 from importlib import reload 
-from gpt import GPTLanguageModel
+
+from gpt import GPTLanguageModel, batch_size, block_size
+from input import Input_Data
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-f = open("./data_cache/test.data", 'rb')
-input = pickle.load(f)
+input = Input_Data.load_data("./data_cache/new.data")
 input.init_split()
 
 torch.no_grad()
 #model = nn.Transformer(nhead=8, d_model=256, dropout=0.2, num_decoder_layers=6)
 model = GPTLanguageModel(len(input.station_ids), input.pm25_mean, input.pm25_std)
-model.load_state_dict(torch.load("./data_cache/gpt_with_stations.model", weights_only=True))
+model.load_state_dict(torch.load("./data_cache/year2_gpt.model", weights_only=True))
 m = model.to(device)
 m.eval()
+
 #%%
 '''
-context = torch.tensor([[15, 10, 4, 1, 8, 11, 9, 9, 7, 6, 5, 5, 5, 5, 5, 5, 6, 7, 10, 8, 7, 9, 9, 8]], dtype=torch.long, device=device)
-station = torch.tensor([1], dtype=torch.long, device=device)
-station = station.repeat(1, len(context[0]))
-print(context.size())
-print(station.size())
-print(torch.tensor([[station[0][0].tolist()]]))
-print(m.generate(context, station, max_new_tokens=12)[0].tolist())
-
-
-err = torch.zeros(1, 12).to(device)
-test_loss = 0
-iterations = 0
-while iterations < 100:
-    result = m.generate(X, stn, max_new_tokens=12).to(device)
-    err = torch.add(err, torch.sub(y, result))
-    #err += y - result[12:]
-
-    iterations += 1
-
-err /= iterations
-print(err.tolist())
-'''
-#%%
 out = {}
 model.eval()
 losses = torch.zeros(200)
 for k in range(200):
-    X, Y, naps_stn = input.get_batch('test')
-    logits, loss = model(X, Y, naps_stn)
+    batch = input.get_batch2('test', input, block_size, batch_size, device)
+    logits, loss = model(batch)
     losses[k] = loss.item()
 out['test'] = losses.mean()
 model.train()
 print(out)
+'''
+#%%
+block, target = input.get_block('train', input, block_size, device)
+gen = m.generate(block, max_new_tokens=60)[0]
+target = target[0, -60:]
+for i in range(60):
+    print(f'{target[i]} = {gen[i]}')
+
 #%%
 '''
 from ucimlrepo import fetch_ucirepo 

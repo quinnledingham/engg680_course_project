@@ -4,6 +4,11 @@ import csv
 from io import BytesIO
 from io import StringIO
 import requests as req
+import datetime
+from geopy import distance
+
+def point_distance(point1, point2):
+    return distance.distance(point1, point2)
 
 class Naps:
     stations_df = pd.read_csv('StationsNAPS.csv')
@@ -27,6 +32,11 @@ class Naps:
         return value
 
     @classmethod
+    def station_coords(self, station):
+        return [station['Latitude'], station['Longitude']]
+
+
+    @classmethod
     def coords(self, day):
         return [day['Latitude//Latitude'], day['Longitude//Longitude']]
     
@@ -42,6 +52,23 @@ class Naps:
             for row in reader:
                 writer.writerow(row)
    
+    def find_5_closest(self, stations, point):
+        distances = []
+        
+        for index, row in stations.iterrows():
+            station_id = row['NAPS_ID']
+            temp_point = [row['Latitude'], row['Longitude']]
+            dist = point_distance(point, temp_point)
+            distances.append((station_id, dist))
+        
+        # Sort distances by the distance value and take the 5 closest
+        distances = sorted(distances, key=lambda x: x[1])[:5]
+        
+        # Convert to a dictionary with station_id as key and distance as value
+        ids = {station_id: dist for station_id, dist in distances}
+        
+        return ids
+
     def data(self, day=0, month=0, year=0):
         local_path = f"./data_cache/naps/PM2.5_{year}.csv"
     
@@ -67,16 +94,16 @@ class Naps:
         max = 0
         df = self.data(year=year)
         
-        pm25_data = list()
-        station_data = list()
+        pm25_data = []
+        station_data = []
         station_ids = {}
         num = 0
         
         for index, row in df.iterrows():
-            row = df.iloc[index]
+            row_id = row['NAPS ID//Identifiant SNPA']
 
-            if row['NAPS ID//Identifiant SNPA'] not in station_ids:
-                station_ids[row['NAPS ID//Identifiant SNPA']] = num
+            if row_id not in station_ids:
+                station_ids[row_id] = num
                 num += 1
 
             for i in range(1, 25):
@@ -85,11 +112,29 @@ class Naps:
                     max = pm25
                 pm25_data.append(pm25)
 
-                station_data.append(row['NAPS ID//Identifiant SNPA'])   
+                station_data.append(row_id)   
 
         print(f"Max PM2.5: {max}")
         return pm25_data, station_data, station_ids
     
+    def get_years(self, years):
+        pm25_total = []
+        stn_total = []
+        stn_ids_total = {}
+        for year in years:
+            pm25, stn, stn_ids = self.get_year(year)
+            pm25_total += pm25
+            stn_total += stn
+
+            # Merge dicts
+            num = len(stn_ids_total)
+            for id in stn_ids:
+                if id not in stn_ids_total:
+                    stn_ids_total[id] = num
+                    num += 1
+
+        return pm25_total, stn_total, stn_ids_total
+
     @classmethod
     def get_station_table(self):
         num = 0
@@ -100,3 +145,14 @@ class Naps:
                 num += 1
 
         return station_ids
+    
+def main():
+    naps = Naps()
+    stations = naps.get()
+    day = stations.iloc[1]
+    print(day)
+    naps.find_5_closest(naps.station_coords(day))
+    #pm25_data, station_data, station_ids = naps.get_year2(2021)
+
+if __name__ == '__main__':
+    main()

@@ -3,7 +3,6 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import intel_extension_for_pytorch as ipex
 
 import pickle
 from naps import Naps
