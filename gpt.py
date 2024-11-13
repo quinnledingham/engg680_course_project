@@ -14,19 +14,18 @@ start_time = time.time()
 
 #%%
 # hyperparameters
-batch_size = 64 # how many independent sequences will we process in parallel?
-block_size = 120 # what is the maximum context length for predictions?
+batch_size = 8 # how many independent sequences will we process in parallel?
+block_size = 240 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 #device = 'xpu' if torch.xpu.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 384
+n_embd = 512
 n_head = 6
 n_layer = 6
-dropout = 0.2
-vocab_size = 2000
+dropout = 0.4
 # ------------
 
 class Head(nn.Module):
@@ -41,20 +40,28 @@ class Head(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, x_kv=None):
         # input of size (batch, time-step, channels)
         # output of size (batch, time-step, head size)
-        B,T,C = x.shape
+        B, T, C = x.shape
+
         k = self.key(x)   # (B,T,hs)
         q = self.query(x) # (B,T,hs)
+        v = self.value(x) # (B,T,hs)
+        if x_kv is not None:
+            k = self.query(x_kv)
+            v = self.query(x_kv)
+
         # compute attention scores ("affinities")
         wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+        #if x_kv is None: # masked attention
+        #    wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)
+
         # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,hs)
         out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+
         return out
 
 class MultiHeadAttention(nn.Module):
@@ -66,8 +73,8 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+    def forward(self, x, x_kv=None):
+        out = torch.cat([h(x, x_kv) for h in self.heads], dim=-1)
         out = self.dropout(self.proj(out))
         return out
 
@@ -93,7 +100,27 @@ class Block(nn.Module):
         # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
+        self.sa = MultiHeadAttention(n_head, head_size) # self attention
+        #self.ca = MultiHeadAttention(n_head, head_size) # cross attention
+        self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+        self.ln3 = nn.LayerNorm(n_embd)
+
+
+    def forward(self, inp):
+        x, encoder_output = inp
+        x = x + self.sa(self.ln1(x))
+        #x = x + self.ca(self.ln2(x), encoder_output)
+        x = x + self.ffwd(self.ln3(x))
+        return (x, encoder_output)
+
+class EncoderBlock(nn.Module):
+    def __init__(self, n_embd, n_head):
+        # n_embd: embedding dimension, n_head: the number of heads we'd like
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size) # self attention
         self.ffwd = FeedFoward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -103,59 +130,77 @@ class Block(nn.Module):
         x = x + self.ffwd(self.ln2(x))
         return x
 
-class GPSSpatialEmbedding(nn.Module):
-    def __init__(self, lat_bins=1800, lon_bins=3600):
-        super(GPSSpatialEmbedding, self).__init__()
-        self.lat_bins = lat_bins
-        self.lon_bins = lon_bins
-        # Define embeddings for latitude and longitude bins
-        self.lat_embedding = nn.Embedding(lat_bins, n_embd)
-        self.lon_embedding = nn.Embedding(lon_bins, n_embd)
+class PM25TransformerModel(nn.Module):
 
-    def discretize_coordinates(self, latitude, longitude):
-        # Convert latitude from [-90, 90] to indices [0, lat_bins - 1]
-        lat_idx = ((latitude + 90) * (self.lat_bins / 180)).long().clamp(0, self.lat_bins - 1)
-        
-        # Convert longitude from [-180, 180] to indices [0, lon_bins - 1]
-        lon_idx = ((longitude + 180) * (self.lon_bins / 360)).long().clamp(0, self.lon_bins - 1)
-        
-        return lat_idx, lon_idx
-
-    def forward(self, lat, lon):
-        lat_idx, lon_idx = self.discretize_coordinates(lat, lon)
-
-        # Get embeddings for latitude and longitude
-        lat_embed = self.lat_embedding(lat_idx)
-        lon_embed = self.lon_embedding(lon_idx)
-        
-        # Combine embeddings (e.g., by summing or concatenating)
-        spatial_embedding = lat_embed + lon_embed
-        
-        return spatial_embedding
-
-class GPTLanguageModel(nn.Module):
-
-    def __init__(self, num_of_stations, pm25_mean, pm25_std):
+    def __init__(self, data):
         super().__init__()
-        self.pm25_mean = pm25_mean
-        self.pm25_std = pm25_std
+        self.pm25_mean = data.pm25_mean
+        self.pm25_std = data.pm25_std
+        self.pm25_min = data.pm25_min
+        self.pm25_max = data.pm25_max
+        num_of_stations = len(data.station_ids)
 
         # each token directly reads off the logits for the next token from a lookup table
-        #self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
-        self.pm25_projection = nn.Linear(1, n_embd)
-        self.position_embedding_table = nn.Embedding(24, n_embd)
-        self.naps_station_embedding_table = nn.Embedding(num_of_stations, n_embd)
-        #self.spatial_embedding_table = GPSSpatialEmbedding()
+        self.pm25_projection = nn.Linear(num_of_stations, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.station_embedding = nn.Embedding(num_of_stations, n_embd)
 
+        #self.encoder_blocks = nn.Sequential(*[EncoderBlock(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        #self.lm_head = nn.Linear(n_embd, vocab_size)
-        self.lm_head = nn.Linear(n_embd, 1)
+        self.lm_head = nn.Linear(n_embd, num_of_stations)
 
         self.criterion = nn.MSELoss()
 
         # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
+
+    def forward(self, idx):
+        idx, targets = idx
+        B, T, SF = idx.shape # SF is stations * features
+
+        station_ids = torch.arange(SF, device=device)
+        stn_emb = self.station_embedding(station_ids)
+        stn_emb = stn_emb.unsqueeze(0).unsqueeze(0).expand(B, T, SF, n_embd)
+
+        idx = self.normalize(idx.float())
+        pm25_emb = self.pm25_projection(idx) # (B, T, n_embd)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, n_embd) change to (T, SF, n_embd)
+
+        x = pm25_emb + stn_emb.sum(dim=2) + pos_emb # (B,T,C)
+
+        #encoder_output = self.encoder_blocks(x)
+        encoder_output = None
+        x, _ = self.blocks((x, encoder_output)) # (B,T,C)
+        x = self.ln_f(x) # (B,T,C)
+        logits = self.lm_head(x) # (B,T,vocab_size)
+
+        loss = None
+        if targets is not None:
+            B, T, C = logits.shape
+            targets = self.normalize(targets.float())
+            loss = self.criterion(logits, targets)
+
+        return logits, loss
+
+    def generate(self, block, max_new_tokens):
+        x, _ = block
+        generated_values = []
+        # idx is (B, T) array of indices in the current context
+        for i in range(max_new_tokens):
+            # get the predictions
+            logits, loss = self((x, None))
+            # focus only on the last time step
+            logits = logits[:, -1, :] # becomes (B, C)
+
+            logits = self.denormalize(logits)
+            #value = self.denormalize(logits).int()
+            generated_values.append(logits.round().int().flatten().tolist())
+
+            logits = logits.unsqueeze(1)
+            x = torch.cat((x, logits), dim=1)
+
+        return generated_values
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -165,61 +210,11 @@ class GPTLanguageModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx):
-        D, B, T = idx.shape # D is datatype
+    def normalize(self, x):
+        return (x - self.pm25_min) / (self.pm25_max - self.pm25_min)
 
-        # idx and targets are both (B,T) tensor of integers
-        normalized_pm25 = (idx[0].float() - self.pm25_mean) / self.pm25_std
-        pm25_emb = self.pm25_projection(normalized_pm25.unsqueeze(-1))
-        #pm25_emb = self.pm25_projection(idx[0].float().unsqueeze(-1))
-        stn_emb = self.naps_station_embedding_table(idx[1])
-        pos_emb = self.position_embedding_table(idx[2]) # (T,C)
-        
-        x = pm25_emb + pos_emb # (B,T,C)
-        if idx[1] is not None:
-            x += stn_emb
-
-        x = self.blocks(x) # (B,T,C)
-        x = self.ln_f(x) # (B,T,C)
-        logits = self.lm_head(x) # (B,T,vocab_size)
-
-        if idx[3] is None:
-            loss = None
-        else:
-            #B, T, C = logits.shape
-            normalized_targets = (idx[3].float() - self.pm25_mean) / self.pm25_std
-            #loss = F.mse_loss(logits.squeeze(-1), targets)
-            loss = self.criterion(logits.squeeze(-1), normalized_targets)
-
-        return logits, loss
-
-    def generate(self, block, max_new_tokens):
-        generated_values = None
-        # idx is (B, T) array of indices in the current context
-        for i in range(max_new_tokens):
-            # get the predictions
-            logits, loss = self(block)
-            # focus only on the last time step
-            logits = logits[:, -1] # becomes (B, C)
-
-            denormalized_value = (logits * self.pm25_std) + self.pm25_mean
-            if generated_values is None:
-                generated_values = denormalized_value.round().int()
-            else:
-                generated_values = torch.cat((generated_values, denormalized_value.round().int()), dim=1)
-
-            # block.size() = 3, 1, 60
-            # input: data type(pm25, station id, time), batch, context length
-            station = torch.tensor([[block[1][0][i]]], dtype=torch.long, device=device)
-            time = torch.tensor([[12 + (i / 5)]], dtype=torch.long, device=device)
-
-            new_block0 = torch.cat((block[0], denormalized_value.round().int()), dim=1)
-            new_block1 = torch.cat((block[1], station), dim=1) # (B, T+1)
-            new_block2 = torch.cat((block[2], time), dim=1) # (B, T+1)
-
-            block = torch.stack((new_block0, new_block1, new_block2))
-
-        return generated_values
+    def denormalize(self, x):
+        return x * (self.pm25_max - self.pm25_min) + self.pm25_min
 
 @torch.no_grad()
 def estimate_loss(model, data):
@@ -228,7 +223,7 @@ def estimate_loss(model, data):
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            batch = data.get_batch2(split, data, block_size, batch_size, device)
+            batch = data.get_batch(split, batch_size, block_size, device)
             logits, loss = model(batch)
             losses[k] = loss.item()
         out[split] = losses.mean()
@@ -241,7 +236,7 @@ def main():
 
     torch.manual_seed(1337)
 
-    model = GPTLanguageModel(len(data.station_ids), data.pm25_mean, data.pm25_std)
+    model = PM25TransformerModel(data)
     m = model.to(device)
     # print the number of parameters in the model
     print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
@@ -250,14 +245,13 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     for iter in range(max_iters):
-
         # every once in a while evaluate the loss on train and val sets
         if iter % eval_interval == 0 or iter == max_iters - 1:
             losses = estimate_loss(model, data)
-            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - start_time}")
+            print(f"step {iter}: train loss {losses['train']:.8f}, val loss {losses['val']:.8f}, time {time.time() - start_time}")
 
         # sample a batch of data
-        batch = data.get_batch2('train', data, block_size, batch_size, device)
+        batch = data.get_batch('train', batch_size, block_size, device)
 
         # evaluate the loss
         logits, loss = model(batch)
@@ -265,9 +259,10 @@ def main():
         loss.backward()
         optimizer.step()
 
-    torch.save(m.state_dict(), "./data_cache/year2_gpt.model")
+    torch.save(m.state_dict(), "./data_cache/all_stns_v2.model")
 
 if __name__ == '__main__':
     main()
 
 #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+# %%

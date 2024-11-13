@@ -6,6 +6,7 @@ import pickle
 import math
 import random
 import numpy as np
+import pandas as pd
 
 class Input_Data:
     # pm25_data is a list of pm2.5 values
@@ -27,89 +28,56 @@ class Input_Data:
         self = pickle.load(f)
         f.close()
 
+        self.df = pd.read_csv('./data_cache/station_features.csv')
+
         return self
 
     def init_split(self):
-        self.data[0] = np.where(self.data[0] < 0, 0, self.data[0])
+        self.df = self.df.drop(self.df.columns[0], axis=1)
+        self.data = torch.tensor(self.df.to_numpy(), dtype=torch.long)
+        #self.data[0] = np.where(self.data[0] < 0, 0, self.data[0])
 
-        n = int(0.75*len(self.data[0])) # first 90% will be train, rest val
-        t = int(0.9*len(self.data[0]))
+        n = int(0.75*len(self.data)) # first 90% will be train, rest val
+        t = int(0.9*len(self.data))
+
+        self.train = self.data[:n, :]
+        self.val = self.data[n:t, :]
+        self.test = self.data[t:, :]
 
         train_array = np.array([row[:n] for row in self.data])
 
-        self.train = torch.tensor(train_array)
-        self.val = torch.tensor(np.array([row[n:t] for row in self.data]))
-        self.test = torch.tensor(np.array([row[t:] for row in self.data]))
-
         self.pm25_mean = np.mean(train_array)
         self.pm25_std = np.std(np.array([row[:n] for row in self.data]))
-
-    # data loading
+        self.pm25_min = np.min(train_array)
+        self.pm25_max = np.max(train_array)
+    
     def get_batch(self, split, batch_size, block_size, device):
-        # generate a small batch of data of inputs x and targets y
-        data = self.train_pm25 if split == 'train' else self.val_pm25
-        station_data = self.train_stn if split == 'train' else self.val_stn
-        
-        if split == 'test':
-            data = self.test_pm25
-            station_data = self.test_stn
+        if split == 'train':
+            data = self.train
+        elif split == 'val':
+            data = self.val
+        elif split == 'test':
+            data = self.test
 
         ix = torch.randint(len(data) - block_size, (batch_size,))
 
-        x = torch.stack([data[i:i+block_size] for i in ix])
+        x = torch.stack([data[i:i+block_size] for i in ix],)
         y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-        naps_stn = torch.stack([station_data[i:i+block_size] for i in ix])
 
-        x, y, naps_stn = x.to(device), y.to(device), naps_stn.to(device)
-        return x, y, naps_stn
-    
-    def get_batch2(self, split, data, block_size, batch_size, device):
-        # generate a small batch of data of inputs x and targets y
-        pm25_data = data.train[0] if split == 'train' else data.val[0]
-        station_data = data.train[2] if split == 'train' else data.val[2]
-        
-        if split == 'test':
-            pm25_data = data.test[0]
-            station_data = data.test[2]
+        return (x.to(device), y.to(device))
 
-        block_num = math.floor(len(pm25_data)/(batch_size * block_size))
-        index = random.randint(0, block_num - 1)
+    def get_block(self, split, batch_size, block_size, device):
+        if split == 'train':
+            data = self.train
+        elif split == 'val':
+            data = self.val
+        elif split == 'test':
+            data = self.test
 
-        start = index * batch_size * block_size
-        end = (index + 1) * batch_size * block_size
+        ix = torch.randint(len(data) - block_size, (1,))
 
-        ix = torch.arange(start, end, block_size)
+        split = int(block_size-24)
+        x = torch.stack([data[i:i+split] for i in ix],)
+        y = torch.stack([data[i+split:i+block_size] for i in ix])
 
-        context = torch.stack([pm25_data[i:i+block_size] for i in ix])
-        target = torch.stack([pm25_data[i+1:i+block_size+1] for i in ix])
-        stns = torch.stack([station_data[i:i+block_size] for i in ix])
-        time = torch.stack([data.train[1][i:i+block_size] for i in ix])
-
-        batch = torch.stack((context, stns, time, target))
-
-        return batch.to(device)
-    
-    def get_block(self, split, data, block_size, device):
-                # generate a small batch of data of inputs x and targets y
-        pm25_data = data.train[0] if split == 'train' else data.val[0]
-        station_data = data.train[2] if split == 'train' else data.val[2]
-        
-        if split == 'test':
-            pm25_data = data.test[0]
-            station_data = data.test[2]
-
-        block_num = math.floor(len(pm25_data)/block_size)
-
-        index = random.randint(0, block_num - 1)
-        start = index * block_size
-
-        half = math.floor(block_size / 2)
-
-        context = torch.stack((pm25_data[start:start+half],))
-        stns = torch.stack((station_data[start:start+half],))
-        time = torch.stack((data.train[1][start:start+half],))
-        target = torch.stack((pm25_data[start+1:start+block_size+1],))
-
-        batch = torch.stack((context, stns, time))
-
-        return batch.to(device), target.to(device)
+        return (x.to(device), y.to(device))

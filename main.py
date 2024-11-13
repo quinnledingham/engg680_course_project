@@ -121,118 +121,38 @@ def create_data_cache():
         if not os.path.exists(path):
             os.makedirs(path)
 
-block_size = 256
-
-def collect_day_data(date_str, df_by_date, closest_stations_cache, station_ids):
-    day_data = [[], [], []]
-    if date_str in df_by_date:
-        day_df = df_by_date[date_str]
-
-        # Collect PM2.5 values for each station's closest stations for all hours
-        for station_id, closest_stations in closest_stations_cache.items():
-            for hour in range(1, 25):
-                hour_column = f'H{hour:02d}//H{hour:02d}'
-                
-                # Collect PM2.5 data for each close station in closest_stations
-                for close_id in closest_stations:
-                    pm25_values = day_df[day_df['NAPS ID//Identifiant SNPA'] == close_id].get(hour_column)
-                    if not pm25_values.empty:
-                        pm25_value = pm25_values.values[0]
-                        day_data[0].append(pm25_value)
-                        day_data[1].append(hour - 1)  # Hour index
-                        day_data[2].append(station_ids[close_id])
-    return day_data
-
-def create_blocks(year):
-    start_date = datetime.date(2021, 1, 1)
-    end_date = datetime.date(2021, 12, 31)
+def feature_data_frame(year):
     naps = Naps()
     df = naps.data(year=year)
-    station_ids = {}
-    num = 0
 
-    # Create a lookup table for station ids
-    for row_id in df['NAPS ID//Identifiant SNPA'].unique():
-        station_ids[row_id] = num
-        num += 1
-
-    # Filter stations once by relevant station IDs
-    filtered_stations_df = naps.stations_df[naps.stations_df['NAPS_ID'].isin(station_ids.keys())]
-
-    # Cache closest stations for each station ID
-    closest_stations_cache = {
-        row['NAPS_ID']: naps.find_5_closest(filtered_stations_df, naps.station_coords(row))
-        for _, row in filtered_stations_df.iterrows()
-    }
-
-    # Prepare data structure to store results
-    all_data_blocks = [[], [], []]
-
-    # Group data by date once to avoid repeated filtering
-    df_by_date = {date: day_df for date, day_df in df.groupby('Date//Date')
-                  if start_date <= datetime.datetime.strptime(date, "%Y-%m-%d").date() <= end_date}
-
-    # Parallel data collection by date
-    with ProcessPoolExecutor() as executor:
-        results = list(executor.map(
-            collect_day_data,
-            df_by_date.keys(),
-            [df_by_date] * len(df_by_date),
-            [closest_stations_cache] * len(df_by_date),
-            [station_ids] * len(df_by_date)
-        ))
-
-    # Combine results into all_data_blocks
-    for result in results:
-        all_data_blocks[0].extend(result[0])
-        all_data_blocks[1].extend(result[1])
-        all_data_blocks[2].extend(result[2])
-
-    # Convert to numpy arrays for faster manipulation
-    all_data_blocks = [np.array(data) for data in all_data_blocks]
-
-    # Initialize and save data
-    input_data = Input_Data(all_data_blocks, station_ids)
-    input_data.save_data("./data_cache/new.data")
-
-def sorted_by_time(year):
-    naps = Naps()
-    df = naps.data(year=year)
-    date = datetime.date(2021, 1, 1)
-    end_date = datetime.date(2021, 12, 31)
+    date = datetime.date(year, 1, 1)
+    end_date = datetime.datetime.combine(datetime.date(year, 12, 31), datetime.datetime.max.time())
     delta = datetime.timedelta(days=1)
 
-    value = []
-    variable = []
-    time = []
-    station_ids = {}
+    station_ids = {row_id: idx for idx, row_id in enumerate(df['NAPS ID//Identifiant SNPA'].unique())}
 
-    time_index = 0
-    num = 0
-    while(date <= end_date):
-        one_day = df[df['Date//Date'] == date.strftime("%Y-%m-%d")]
+    date_range = pd.date_range(start=date, end=end_date, freq='h')  # hourly timestamps for the entire year
+    pm25_df = pd.DataFrame(index=date_range, columns=station_ids.keys())
+
+    df['DateTime'] = pd.to_datetime(df['Date//Date'])
+
+    for index, row in df.iterrows():
+        row_id = row['NAPS ID//Identifiant SNPA']
 
         for i in range(1, 25):
-            for index, row in one_day.iterrows():
-                row_id = row['NAPS ID//Identifiant SNPA']
+            timestamp = row['DateTime'] + datetime.timedelta(hours=i - 1)
+            pm25 = Naps.PM25(row, i)
+            
+            # Add PM2.5 measurement to the appropriate cell
+            pm25_df.loc[timestamp, row_id] = pm25
 
-                # create lookup table for station ids
-                if row_id not in station_ids:
-                    station_ids[row_id] = num
-                    num += 1
+        if index % 1000 == 0:
+            print(index)
 
-                pm25 = Naps.PM25(row, i)
-                value.append(pm25)
-                variable.append(row_id)
-                time.append(time_index)
-                
-            time_index += 1
 
-        date += delta
+    pm25_df = pm25_df.fillna(0)
 
-        
-    input = Input_Data(value, variable, time, station_ids)
-    input.save_data("./data_cache/test.data")
+    return pm25_df
 
 def main():    
     create_data_cache()
@@ -247,8 +167,10 @@ def main():
         #training_data.loc[i] = new_train
     #print(training_data)
 
-   #sorted_by_time(2021)
-    test = create_blocks(2021)
+    df = feature_data_frame(2021)
+    print(df)
+    df.to_csv('./data_cache/station_features.csv')
+
 
     
 if __name__ == '__main__':
