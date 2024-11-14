@@ -7,6 +7,7 @@ import math
 import random
 import numpy as np
 import pandas as pd
+from naps import Naps
 
 class Input_Data:
     # pm25_data is a list of pm2.5 values
@@ -47,9 +48,26 @@ class Input_Data:
         train_array = np.array([row[:n] for row in self.data])
 
         self.pm25_mean = np.mean(train_array)
-        self.pm25_std = np.std(np.array([row[:n] for row in self.data]))
+        self.pm25_std = np.std(train_array)
         self.pm25_min = np.min(train_array)
         self.pm25_max = np.max(train_array)
+
+        '''
+        naps = Naps()
+        df = naps.data(year=year)
+        station_ids = {}
+        # Create a lookup table for station ids
+        for row_id in df['NAPS ID//Identifiant SNPA'].unique():
+            station_ids[row_id] = num
+            num += 1
+
+        filtered_stations_df = naps.stations_df[naps.stations_df['NAPS_ID'].isin(station_ids.keys())]
+        # Cache closest stations for each station ID
+        closest_stations_cache = {
+            row['NAPS_ID']: naps.find_5_closest(filtered_stations_df, naps.station_coords(row))
+            for _, row in filtered_stations_df.iterrows()
+        }
+        '''
     
     def get_batch(self, split, batch_size, block_size, device):
         if split == 'train':
@@ -61,6 +79,7 @@ class Input_Data:
 
         ix = torch.randint(len(data) - block_size, (batch_size,))
 
+        data = torch.unsqueeze(data, 2)
         x = torch.stack([data[i:i+block_size] for i in ix],)
         y = torch.stack([data[i+1:i+block_size+1] for i in ix])
 
@@ -75,9 +94,13 @@ class Input_Data:
             data = self.test
 
         ix = torch.randint(len(data) - block_size, (1,))
+        #ix[0] = 0
 
-        split = int(block_size-24)
+        data = torch.unsqueeze(data, 2)
+        split = int(block_size-20)
         x = torch.stack([data[i:i+split] for i in ix],)
         y = torch.stack([data[i+split:i+block_size] for i in ix])
 
+        print(x)
         return (x.to(device), y.to(device))
+    

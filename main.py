@@ -129,6 +129,7 @@ def feature_data_frame(year):
     end_date = datetime.datetime.combine(datetime.date(year, 12, 31), datetime.datetime.max.time())
     delta = datetime.timedelta(days=1)
 
+    df = df.sort_values(by=['Longitude//Longitude', 'Latitude//Latitude'])
     station_ids = {row_id: idx for idx, row_id in enumerate(df['NAPS ID//Identifiant SNPA'].unique())}
 
     date_range = pd.date_range(start=date, end=end_date, freq='h')  # hourly timestamps for the entire year

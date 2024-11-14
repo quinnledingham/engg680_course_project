@@ -138,36 +138,65 @@ class PM25TransformerModel(nn.Module):
         self.pm25_std = data.pm25_std
         self.pm25_min = data.pm25_min
         self.pm25_max = data.pm25_max
-        num_of_stations = len(data.station_ids)
+        self.num_of_stations = len(data.station_ids)
 
         # each token directly reads off the logits for the next token from a lookup table
-        self.pm25_projection = nn.Linear(num_of_stations, n_embd)
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.station_embedding = nn.Embedding(num_of_stations, n_embd)
+        self.pm25_projection = nn.Linear(1, n_embd)
+        self.position_embedding_table = nn.Embedding(24, n_embd)
+        self.station_embedding = nn.Embedding(self.num_of_stations, n_embd)
 
         #self.encoder_blocks = nn.Sequential(*[EncoderBlock(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = nn.Linear(n_embd, num_of_stations)
+        self.lm_head = nn.Linear(n_embd, 1)
 
         self.criterion = nn.MSELoss()
 
         # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
 
+    def select(self, x):
+        B, T, S, F = x.shape # SF is stations * features
+        stations_in_batch = 10
+        hours = int(T / stations_in_batch)
+
+        start_ix = torch.randint(S - (stations_in_batch - 1), (1,))  # Ensure we have room for 10 stations
+        #start_ix[0] = 0
+        station_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch, device=device)
+
+        x = x.view(B, T, S * F)
+        x = x[:, :hours, station_indices]
+        x = x.view(B, T)
+        #x = self.normalize(x.float().unsqueeze(2))
+        x = x.float().unsqueeze(2)
+
+        return x
+
     def forward(self, idx):
         idx, targets = idx
-        B, T, SF = idx.shape # SF is stations * features
 
-        station_ids = torch.arange(SF, device=device)
-        stn_emb = self.station_embedding(station_ids)
-        stn_emb = stn_emb.unsqueeze(0).unsqueeze(0).expand(B, T, SF, n_embd)
+        stations_in_batch = 10
+        hours = int(idx.shape[1] / stations_in_batch)
 
-        idx = self.normalize(idx.float())
+        start_ix = torch.randint(self.num_of_stations - 9, (1,))  # Ensure we have room for 10 stations
+        station_indices = torch.arange(start_ix.item(), start_ix.item() + 10, device=device)
+
+        station_range = station_indices.repeat(int(block_size / stations_in_batch))
+        pos_range = torch.arange(24, device=device).repeat_interleave(stations_in_batch)
+
+        if targets is not None:
+            B, T, S, F = idx.shape # SF is stations * features
+            idx = idx.view(B, T, S * F)
+            idx = idx[:, :hours, station_indices]
+            idx = idx.view(B, block_size)
+            idx = self.normalize(idx.float().unsqueeze(2))
+
+        pos_range = pos_range[0:idx.shape[1]]
         pm25_emb = self.pm25_projection(idx) # (B, T, n_embd)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, n_embd) change to (T, SF, n_embd)
+        pos_emb = self.position_embedding_table(pos_range) 
+        stn_emb = self.station_embedding(station_range[0:idx.shape[1]])
 
-        x = pm25_emb + stn_emb.sum(dim=2) + pos_emb # (B,T,C)
+        x = pm25_emb + pos_emb + stn_emb # (B,T,C)
 
         #encoder_output = self.encoder_blocks(x)
         encoder_output = None
@@ -178,7 +207,12 @@ class PM25TransformerModel(nn.Module):
         loss = None
         if targets is not None:
             B, T, C = logits.shape
-            targets = self.normalize(targets.float())
+
+            targets = targets.view(B, T, S * F)
+            targets = targets[:, :hours, station_indices]
+            targets = targets.view(B, block_size)
+            targets = self.normalize(targets.float().unsqueeze(2))
+
             loss = self.criterion(logits, targets)
 
         return logits, loss
@@ -186,6 +220,9 @@ class PM25TransformerModel(nn.Module):
     def generate(self, block, max_new_tokens):
         x, _ = block
         generated_values = []
+
+        x = self.select(x)
+
         # idx is (B, T) array of indices in the current context
         for i in range(max_new_tokens):
             # get the predictions
@@ -194,10 +231,9 @@ class PM25TransformerModel(nn.Module):
             logits = logits[:, -1, :] # becomes (B, C)
 
             logits = self.denormalize(logits)
-            #value = self.denormalize(logits).int()
             generated_values.append(logits.round().int().flatten().tolist())
 
-            logits = logits.unsqueeze(1)
+            logits = logits.unsqueeze(2)
             x = torch.cat((x, logits), dim=1)
 
         return generated_values
