@@ -13,9 +13,9 @@ class Input_Data:
     # pm25_data is a list of pm2.5 values
     # station_data is a list of NAPS_IDs, storing the id for each pm2.5 value
     # station_ids is a dict converting NAPS_IDs to 0 - len(stations) for use in embedding
-    def __init__(self, data, station_ids):
-        self.data = data
-        self.station_ids = station_ids
+    #def __init__(self, data, station_ids):
+        #self.data = data
+        #self.station_ids = station_ids
 
     def save_data(self, filepath):
         f = open(filepath, "wb")
@@ -23,18 +23,15 @@ class Input_Data:
         f.close()
 
     # used like a constructor when using the data
-    @classmethod
     def load_data(self, filepath):
-        f = open(filepath, 'rb')
-        self = pickle.load(f)
-        f.close()
-
+        #f = open(filepath, 'rb')
+        #self = pickle.load(f)
+        #f.close()
         self.df = pd.read_csv('./data_cache/station_features.csv')
-
-        return self
 
     def init_split(self):
         self.df = self.df.drop(self.df.columns[0], axis=1)
+        self.num_of_stations = len(self.df.columns)
         self.data = torch.tensor(self.df.to_numpy(), dtype=torch.long)
         #self.data[0] = np.where(self.data[0] < 0, 0, self.data[0])
 
@@ -83,7 +80,7 @@ class Input_Data:
         x = torch.stack([data[i:i+block_size] for i in ix],)
         y = torch.stack([data[i+1:i+block_size+1] for i in ix])
 
-        return (x.to(device), y.to(device))
+        return (x.to(device), y.to(device), ix)
 
     def get_block(self, split, batch_size, block_size, device):
         if split == 'train':
@@ -94,7 +91,7 @@ class Input_Data:
             data = self.test
 
         ix = torch.randint(len(data) - block_size, (1,))
-        #ix[0] = 0
+        ix[0] = 0
 
         data = torch.unsqueeze(data, 2)
         split = int(block_size-20)
