@@ -15,6 +15,9 @@ import datetime
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 
+from scipy.spatial import KDTree
+from scipy.spatial import distance_matrix
+
 from naps import Naps
 from gpt import Input_Data
 
@@ -111,12 +114,49 @@ class NFDB:
         else:
             df = pd.read_csv(local_csv_path)
         
+        # Store fire data with coordinates and report dates
+        self.fire_data = df[['LATITUDE', 'LONGITUDE', 'REP_DATE', 'OUT_DATE']]
+        self.fire_data['REP_DATE'] = pd.to_datetime(self.fire_data['REP_DATE'])
+        self.fire_data['OUT_DATE'] = pd.to_datetime(self.fire_data['OUT_DATE'])
+        
+        # Calculate a general max_distance (95th percentile of distances)
+        fire_coords = self.fire_data[['LATITUDE', 'LONGITUDE']].to_numpy()
+        dist_matrix = distance_matrix(fire_coords, fire_coords)
+        self.max_distance = np.percentile(dist_matrix, 100)
+
+        self.active_fire_dates = self.fire_data[['REP_DATE', 'OUT_DATE']]
+
         return df
 
+    def find_closest_active_fire(self, point, timestamp):
+         # Filter fires active on or before the timestamp
+        active_mask = (self.active_fire_dates['REP_DATE'] <= timestamp)
+
+        # Handle the case where OUT_DATE is missing: fires without OUT_DATE are considered inactive after 3 weeks
+        # We filter for fires where REP_DATE + 3 weeks >= timestamp
+        active_mask = active_mask & ((self.active_fire_dates['OUT_DATE'].notna() & (self.active_fire_dates['OUT_DATE'] >= timestamp)) | (self.active_fire_dates['OUT_DATE'].isna() & (self.active_fire_dates['REP_DATE'] + datetime.timedelta(weeks=3) >= timestamp)))
+
+        active_fires = self.fire_data[active_mask]
+
+        if active_fires.empty:
+            # No active fires; return a default large distance indicating no nearby fire
+            return 0  # or another indicator for no active fire
+
+        # Create a KDTree for the active fires
+        active_fire_coords = active_fires[['LATITUDE', 'LONGITUDE']].to_numpy()
+        active_fire_tree = KDTree(active_fire_coords)
+
+        # Query the closest active fire
+        dist, _ = active_fire_tree.query(point)
+
+        # Normalize distance to a 0-9 scale
+        fire_proximity = max(0, min(9, 9 * (1 - np.log(dist + 1) / np.log(self.max_distance + 1)) ** 2))
+        return fire_proximity
+    
 import pickle
 
 def create_data_cache():
-    paths = ["./data_cache", "./data_cache/naps", "./data_cache/climate_data/"]
+    paths = ["./data_cache", "./data_cache/naps", "./data_cache/climate_data/", "./data_cache/fires"]
     for path in paths:
         if not os.path.exists(path):
             os.makedirs(path)
@@ -125,27 +165,46 @@ def feature_data_frame(year):
     naps = Naps()
     df = naps.data(year=year)
 
+    nfdb = NFDB()
+    fires = []
+    f_df = nfdb.data(year)
+    for index, row in f_df.iterrows():
+        fires.append([row['LATITUDE'], row['LONGITUDE']])
+
     date = datetime.date(year, 1, 1)
     end_date = datetime.datetime.combine(datetime.date(year, 12, 31), datetime.datetime.max.time())
-    delta = datetime.timedelta(days=1)
 
     df = df.sort_values(by=['Longitude//Longitude', 'Latitude//Latitude'])
     station_ids = {row_id: idx for idx, row_id in enumerate(df['NAPS ID//Identifiant SNPA'].unique())}
 
+    pm25_columns = [f"{station_id}_PM25" for station_id in station_ids.keys()]
+    fire_proximity_columns = [f"{station_id}_FireProximity" for station_id in station_ids.keys()]
+    columns = pm25_columns + fire_proximity_columns
+
     date_range = pd.date_range(start=date, end=end_date, freq='h')  # hourly timestamps for the entire year
-    pm25_df = pd.DataFrame(index=date_range, columns=station_ids.keys())
+    pm25_df = pd.DataFrame(index=date_range, columns=columns)
 
     df['DateTime'] = pd.to_datetime(df['Date//Date'])
 
+    last = 0
     for index, row in df.iterrows():
         row_id = row['NAPS ID//Identifiant SNPA']
+        #fire_proximity = nfdb.find_closest(naps.coords(row), timestamp)
+
+        # Calculate fire proximity only for fires active at this timestamp
+        fire_proximity = nfdb.find_closest_active_fire(
+            [row['Latitude//Latitude'], row['Longitude//Longitude']],
+            row['DateTime']
+        )
+        fire_proximity = round(fire_proximity)
 
         for i in range(1, 25):
             timestamp = row['DateTime'] + datetime.timedelta(hours=i - 1)
-            pm25 = Naps.PM25(row, i)
-            
-            # Add PM2.5 measurement to the appropriate cell
-            pm25_df.loc[timestamp, row_id] = pm25
+            pm25 = Naps.PM25(row, i, last)
+            last = pm25
+
+            pm25_df.loc[timestamp, f"{row_id}_PM25"] = pm25
+            pm25_df.loc[timestamp, f"{row_id}_FireProximity"] = fire_proximity
 
         if index % 1000 == 0:
             print(index)

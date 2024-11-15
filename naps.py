@@ -19,7 +19,7 @@ class Naps:
 
     # day is a row from the dataframe returned by data
     @classmethod
-    def PM25(self, day, hour):
+    def PM25(self, day, hour, last):
         value = 0
         if (hour < 10):
             value = day[f'H0{hour}//H0{hour}']
@@ -27,7 +27,7 @@ class Naps:
             value = day[f'H{hour}//H{hour}']
 
         if value < 0 :
-            value = 0 # set -999 values to 0
+            value = last # set -999 values to 0
 
         return value
 

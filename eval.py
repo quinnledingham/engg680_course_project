@@ -17,24 +17,24 @@ data.init_split()
 torch.no_grad()
 #model = nn.Transformer(nhead=8, d_model=256, dropout=0.2, num_decoder_layers=6)
 model = PM25TransformerModel(data)
-model.load_state_dict(torch.load("./data_cache/all_stns_v2.model", weights_only=True))
+model.load_state_dict(torch.load("./data_cache/with_cross.model", weights_only=True))
 m = model.to(device)
 m.eval()
 
 #%%
-block = data.get_block('train', batch_size, block_size, device)
-
-x, targets = block
-hours = int(x.shape[1] / stations_in_batch)
-
-start_ix = torch.randint(model.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
-stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch, device=device)
-
-x = model.select(x, stn_indices)
-targets = model.select(targets, stn_indices)
-
 hours = 20
-gen = m.generate(x, max_new_tokens=hours)
+block = data.get_block('train', hours, block_size, device)
+
+x, targets, ix, other = block
+#hours = int(x.shape[1] / stations_in_batch)
+
+#start_ix = torch.randint(model.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+#stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch, device=device)
+
+#x = model.select(x, stn_indices)
+#targets = model.select(targets, stn_indices)
+
+gen = m.generate(block, max_new_tokens=hours)
 
 print(gen)
 print(targets)

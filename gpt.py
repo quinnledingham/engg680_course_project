@@ -3,31 +3,34 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import intel_extension_for_pytorch as ipex
+#import intel_extension_for_pytorch as ipex
 
 import pickle
 import numpy as np
 import time
 
-from input import Input_Data
+from input import Input_Data, stations_in_batch, num_of_features
 
 start_time = time.time()
 
 #%%
 # hyperparameters
-batch_size = 8 # how many independent sequences will we process in parallel?
-block_size = 512 # what is the maximum context length for predictions?
+batch_size = 64 # how many independent sequences will we process in parallel?
+block_size = 256 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 500
-learning_rate = 1e-4
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device = 'xpu' if torch.xpu.is_available() else 'cpu'
+#device = 'xpu' if torch.xpu.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 384
-n_head = 8
+n_head = 6
 n_layer = 6
-dropout = 0.2
+dropout = 0.1
 # ------------
+
+pos_range = torch.arange(0, 24, device=device).repeat(int(block_size / stations_in_batch))
+day_range = torch.arange(0, 365, device=device).repeat_interleave(24)
 
 class Head(nn.Module):
     """ one head of self-attention """
@@ -102,7 +105,7 @@ class Block(nn.Module):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size) # self attention
-        #self.ca = MultiHeadAttention(n_head, head_size) # cross attention
+        self.ca = MultiHeadAttention(n_head, head_size) # cross attention
         self.ffwd = FeedFoward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -112,7 +115,7 @@ class Block(nn.Module):
     def forward(self, inp):
         x, encoder_output = inp
         x = x + self.sa(self.ln1(x))
-        #x = x + self.ca(self.ln2(x), encoder_output)
+        x = x + self.ca(self.ln2(x), encoder_output)
         x = x + self.ffwd(self.ln3(x))
         return (x, encoder_output)
 
@@ -131,8 +134,6 @@ class EncoderBlock(nn.Module):
         x = x + self.ffwd(self.ln2(x))
         return x
 
-stations_in_batch = 1
-
 class PM25TransformerModel(nn.Module):
 
     def __init__(self, data):
@@ -148,6 +149,8 @@ class PM25TransformerModel(nn.Module):
         self.hour_embedding_table = nn.Embedding(block_size, n_embd)
         self.day_embedding_table = nn.Embedding(365, n_embd)
         self.station_embedding = nn.Embedding(self.num_of_stations, n_embd)
+        self.fire_embedding = nn.Embedding(10, n_embd)
+        self.cross_station_projection = nn.Linear(self.num_of_stations-stations_in_batch, n_embd, device=device)
 
         #self.encoder_blocks = nn.Sequential(*[EncoderBlock(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
@@ -158,7 +161,7 @@ class PM25TransformerModel(nn.Module):
 
         # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
-
+    '''
     def select(self, x, stn_indices):
         B, T, S, F = x.shape # SF is stations * features
 
@@ -171,39 +174,41 @@ class PM25TransformerModel(nn.Module):
         x = x.float().unsqueeze(2)
 
         return x
-
+    '''
     def forward(self, idx):
-        idx, targets, ix = idx
+        idx, targets, ix, other = idx
 
-        hours = int(idx.shape[1] / stations_in_batch)
+        #hours = int(idx.shape[1] / stations_in_batch)
 
         start_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
         stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch, device=device)
 
-        if targets is not None:
-            idx = self.select(idx, stn_indices)
-            targets = self.select(targets, stn_indices)
+        #if targets is not None:
+        #    idx = self.select(idx, stn_indices)
+        #    targets = self.select(targets, stn_indices)
 
         station_range = stn_indices.repeat(int(block_size / stations_in_batch))
 
         start_hours = torch.remainder(ix, 24)
         start_days = torch.div(ix, 24, rounding_mode="floor")
-        
-        pos_range = torch.arange(0, 24, device=device).repeat(int(block_size / stations_in_batch))
-        day_range = torch.arange(0, 365, device=device).repeat_interleave(24)
 
         hour_ranges = torch.stack([pos_range[h:idx.shape[1]+h] for h in start_hours])
         day_ranges = torch.stack([day_range[d:idx.shape[1]+d] for d in start_days])
 
-        pm25_emb = self.pm25_projection(idx) # (B, T, n_embd)
-        hour_emb = self.hour_embedding_table(torch.arange(block_size, device=device))
+        pm25, fire = torch.split(idx, 1, dim=-1)
+
+        pm25_emb = self.pm25_projection(pm25.float()) # (B, T, n_embd)
+        hour_emb = self.hour_embedding_table(torch.arange(idx.shape[1], device=device))
         day_emb = self.day_embedding_table(day_ranges)
         stn_emb = self.station_embedding(station_range[0:idx.shape[1]])
+        fire_emb = self.fire_embedding(fire.squeeze(-1))
 
-        x = pm25_emb + hour_emb # (B,T,C)
+        x = pm25_emb + hour_emb + day_emb + stn_emb + fire_emb# (B,T,C)
 
         #encoder_output = self.encoder_blocks(x)
-        encoder_output = None
+        other_pm25, _ = torch.split(other, self.num_of_stations-stations_in_batch, dim=-1)
+        encoder_output = self.cross_station_projection(other_pm25.float())
+
         x, _ = self.blocks((x, encoder_output)) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
@@ -211,19 +216,23 @@ class PM25TransformerModel(nn.Module):
         loss = None
         if targets is not None:
             B, T, C = logits.shape
-            loss = self.criterion(logits, targets)
+            targets, _ = torch.split(targets, 1, dim=-1)
+            loss = self.criterion(logits, targets.float())
 
         return logits, loss
 
-    def generate(self, x, max_new_tokens):
+    def generate(self, idx, max_new_tokens):
         generated_values = []
 
         #x = self.normalize(x)
+        x, targets, ix, other = idx
+
+        fire_index = -1 
 
         # idx is (B, T) array of indices in the current context
         for i in range(max_new_tokens):
             # get the predictions
-            logits, loss = self((x, None))
+            logits, loss = self((x, None, ix, other))
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
 
@@ -231,8 +240,14 @@ class PM25TransformerModel(nn.Module):
             values = logits
             generated_values.append(values.round().int().flatten().tolist())
 
-            logits = logits.unsqueeze(2)
-            x = torch.cat((x, logits), dim=1)
+            next_input = logits.unsqueeze(2).repeat(1, 1, 2)
+
+            # Concatenate the next fire value from targets
+            if i < targets.shape[1] - 1:  # Check if there's a next time step in targets
+                next_fire = targets[:, i, 1]  # Select the next fire value
+                next_input[:, :, 1] = next_fire  # Replace the fire value in the prediction
+
+            x = torch.cat((x, next_input.int()), dim=1)
 
         return generated_values
 
@@ -294,7 +309,7 @@ def main():
         loss.backward()
         optimizer.step()
 
-    torch.save(m.state_dict(), "./data_cache/all_stns_v2.model")
+    torch.save(m.state_dict(), "./data_cache/with_cross.model")
 
 if __name__ == '__main__':
     main()

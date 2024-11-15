@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 from naps import Naps
 
+stations_in_batch = 1
+num_of_features = 2
+
 class Input_Data:
     # pm25_data is a list of pm2.5 values
     # station_data is a list of NAPS_IDs, storing the id for each pm2.5 value
@@ -31,9 +34,13 @@ class Input_Data:
 
     def init_split(self):
         self.df = self.df.drop(self.df.columns[0], axis=1)
-        self.num_of_stations = len(self.df.columns)
+        self.num_of_stations = int(len(self.df.columns)/num_of_features)
         self.data = torch.tensor(self.df.to_numpy(), dtype=torch.long)
-        #self.data[0] = np.where(self.data[0] < 0, 0, self.data[0])
+
+
+        T, SF = self.data.shape
+        self.data = self.data.reshape(T, num_of_features, self.num_of_stations)
+        self.data = self.data.permute(0, 2, 1)
 
         n = int(0.75*len(self.data)) # first 90% will be train, rest val
         t = int(0.9*len(self.data))
@@ -65,7 +72,32 @@ class Input_Data:
             for _, row in filtered_stations_df.iterrows()
         }
         '''
-    
+
+    def select(self, x, stn_indices):
+        B, T, S, F = x.shape # SF is stations * features
+        
+        hours = int(T / stations_in_batch)
+
+        all_indices = torch.arange(S, device=x.device)        
+        mask = torch.ones(S, dtype=torch.bool, device=x.device)
+        mask[stn_indices] = False  # Mark the `stn_indices` as False
+
+        not_stn_indices = all_indices[mask]
+
+        selected = x[:, :, stn_indices, :]
+        
+        # Separate the data not at `stn_indices`
+        not_selected = x[:, :, not_stn_indices, :]
+
+        # Reshape if necessary
+        selected = selected.view(B, T, len(stn_indices) * F)
+        not_selected = not_selected.view(B, T, len(not_stn_indices) * F)
+
+        #out = x[:, :hours, stn_indices, :]
+        #out = out.view(B, T, stations_in_batch * F)
+
+        return selected, not_selected
+
     def get_batch(self, split, batch_size, block_size, device):
         if split == 'train':
             data = self.train
@@ -76,13 +108,19 @@ class Input_Data:
 
         ix = torch.randint(len(data) - block_size, (batch_size,))
 
-        data = torch.unsqueeze(data, 2)
+        #data = torch.unsqueeze(data, 2)
         x = torch.stack([data[i:i+block_size] for i in ix],)
         y = torch.stack([data[i+1:i+block_size+1] for i in ix])
 
-        return (x.to(device), y.to(device), ix)
+        start_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+        stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch)
 
-    def get_block(self, split, batch_size, block_size, device):
+        x, other = self.select(x, stn_indices)
+        y, _ = self.select(y, stn_indices)
+
+        return (x.to(device), y.to(device), ix, other.to(device))
+
+    def get_block(self, split, hours, block_size, device):
         if split == 'train':
             data = self.train
         elif split == 'val':
@@ -91,13 +129,17 @@ class Input_Data:
             data = self.test
 
         ix = torch.randint(len(data) - block_size, (1,))
-        ix[0] = 0
 
-        data = torch.unsqueeze(data, 2)
-        split = int(block_size-20)
+        #data = torch.unsqueeze(data, 2)
+        split = int(block_size-hours)
         x = torch.stack([data[i:i+split] for i in ix],)
         y = torch.stack([data[i+split:i+block_size] for i in ix])
 
-        print(x)
-        return (x.to(device), y.to(device))
+        start_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+        stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch)
+
+        x, other = self.select(x, stn_indices)
+        y, _ = self.select(y, stn_indices)
+
+        return (x.to(device), y.to(device), ix, other.to(device))
     
