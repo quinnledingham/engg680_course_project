@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import intel_extension_for_pytorch as ipex
 
 import pickle
 import numpy as np
@@ -15,15 +16,15 @@ start_time = time.time()
 #%%
 # hyperparameters
 batch_size = 8 # how many independent sequences will we process in parallel?
-block_size = 256 # what is the maximum context length for predictions?
+block_size = 512 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 500
-learning_rate = 3e-4
+learning_rate = 1e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-#device = 'xpu' if torch.xpu.is_available() else 'cpu'
+device = 'xpu' if torch.xpu.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 384
-n_head = 6
+n_head = 8
 n_layer = 6
 dropout = 0.2
 # ------------
@@ -185,17 +186,21 @@ class PM25TransformerModel(nn.Module):
 
         station_range = stn_indices.repeat(int(block_size / stations_in_batch))
 
-        start_hour = torch.remainder(ix, 24)
-        start_day = torch.div(ix, 24, rounding_mode="floor")
+        start_hours = torch.remainder(ix, 24)
+        start_days = torch.div(ix, 24, rounding_mode="floor")
         
         pos_range = torch.arange(0, 24, device=device).repeat(int(block_size / stations_in_batch))
+        day_range = torch.arange(0, 365, device=device).repeat_interleave(24)
+
+        hour_ranges = torch.stack([pos_range[h:idx.shape[1]+h] for h in start_hours])
+        day_ranges = torch.stack([day_range[d:idx.shape[1]+d] for d in start_days])
 
         pm25_emb = self.pm25_projection(idx) # (B, T, n_embd)
-        hour_emb = self.hour_embedding_table(pos_range[start_hour:idx.shape[1]+start_hour])
-        day_emb = self.day_embedding_table()
+        hour_emb = self.hour_embedding_table(hour_ranges)
+        day_emb = self.day_embedding_table(day_ranges)
         stn_emb = self.station_embedding(station_range[0:idx.shape[1]])
 
-        x = pm25_emb + hour_emb # (B,T,C)
+        x = pm25_emb + hour_emb + day_emb # (B,T,C)
 
         #encoder_output = self.encoder_blocks(x)
         encoder_output = None
