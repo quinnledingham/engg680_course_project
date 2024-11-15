@@ -145,7 +145,7 @@ class PM25TransformerModel(nn.Module):
 
         # each token directly reads off the logits for the next token from a lookup table
         self.pm25_projection = nn.Linear(1, n_embd)
-        self.hour_embedding_table = nn.Embedding(24, n_embd)
+        self.hour_embedding_table = nn.Embedding(block_size, n_embd)
         self.day_embedding_table = nn.Embedding(365, n_embd)
         self.station_embedding = nn.Embedding(self.num_of_stations, n_embd)
 
@@ -196,11 +196,11 @@ class PM25TransformerModel(nn.Module):
         day_ranges = torch.stack([day_range[d:idx.shape[1]+d] for d in start_days])
 
         pm25_emb = self.pm25_projection(idx) # (B, T, n_embd)
-        hour_emb = self.hour_embedding_table(hour_ranges)
+        hour_emb = self.hour_embedding_table(torch.arange(block_size, device=device))
         day_emb = self.day_embedding_table(day_ranges)
         stn_emb = self.station_embedding(station_range[0:idx.shape[1]])
 
-        x = pm25_emb + hour_emb + day_emb # (B,T,C)
+        x = pm25_emb + hour_emb # (B,T,C)
 
         #encoder_output = self.encoder_blocks(x)
         encoder_output = None
