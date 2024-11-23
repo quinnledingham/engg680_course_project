@@ -93,9 +93,6 @@ class Input_Data:
         selected = selected.view(B, T, len(stn_indices) * F)
         not_selected = not_selected.view(B, T, len(not_stn_indices) * F)
 
-        #out = x[:, :hours, stn_indices, :]
-        #out = out.view(B, T, stations_in_batch * F)
-
         return selected, not_selected
 
     def get_batch(self, split, batch_size, block_size, device):
@@ -106,21 +103,19 @@ class Input_Data:
         elif split == 'test':
             data = self.test
 
-        ix = torch.randint(len(data) - block_size, (batch_size,))
-
-        #data = torch.unsqueeze(data, 2)
+        ix = torch.randint(len(data) - block_size - 24, (batch_size,))
+        stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+        stn_indices = torch.arange(stn_ix.item(), stn_ix.item() + stations_in_batch)
+        
         x = torch.stack([data[i:i+block_size] for i in ix],)
         y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-
-        start_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
-        stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch)
 
         x, other = self.select(x, stn_indices)
         y, _ = self.select(y, stn_indices)
 
-        return (x.to(device), y.to(device), ix, other.to(device))
+        return (x.to(device), y.to(device), ix, stn_ix.to(device), other.to(device))
 
-    def get_block(self, split, hours, block_size, device):
+    def get_block(self, split, hours, block_size, device, ix=None, start_ix=None):
         if split == 'train':
             data = self.train
         elif split == 'val':
@@ -128,18 +123,22 @@ class Input_Data:
         elif split == 'test':
             data = self.test
 
-        ix = torch.randint(len(data) - block_size, (1,))
+        if ix is None:
+            ix = torch.randint(len(data) - block_size, (1,))
 
         #data = torch.unsqueeze(data, 2)
         split = int(block_size-hours)
         x = torch.stack([data[i:i+split] for i in ix],)
         y = torch.stack([data[i+split:i+block_size] for i in ix])
 
-        start_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
-        stn_indices = torch.arange(start_ix.item(), start_ix.item() + stations_in_batch)
+        ix = torch.randint(len(data) - block_size - 24, (1,))
+        stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+        stn_indices = torch.arange(stn_ix.item(), stn_ix.item() + stations_in_batch)
 
         x, other = self.select(x, stn_indices)
         y, _ = self.select(y, stn_indices)
 
-        return (x.to(device), y.to(device), ix, other.to(device))
+        print(f"{ix.item()}, {start_ix.item()}")
+
+        return (x.to(device), y.to(device), ix, stn_ix.to(device), other.to(device))
     

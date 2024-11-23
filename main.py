@@ -127,6 +127,12 @@ class NFDB:
         self.active_fire_dates = self.fire_data[['REP_DATE', 'OUT_DATE']]
 
         return df
+    
+    def get_years(self, years):
+        for year in years:
+            df = self.data(year)
+
+        return df
 
     def find_closest_active_fire(self, point, timestamp):
          # Filter fires active on or before the timestamp
@@ -161,25 +167,26 @@ def create_data_cache():
         if not os.path.exists(path):
             os.makedirs(path)
 
-def feature_data_frame(year):
+def feature_data_frame(years):
     naps = Naps()
-    df = naps.data(year=year)
+    df = naps.get_years(years)
 
-    nfdb = NFDB()
-    fires = []
-    f_df = nfdb.data(year)
-    for index, row in f_df.iterrows():
-        fires.append([row['LATITUDE'], row['LONGITUDE']])
+    #nfdb = NFDB()
+    #fires = []
+    #f_df = nfdb.data(years)
+    #for index, row in f_df.iterrows():
+    #    fires.append([row['LATITUDE'], row['LONGITUDE']])
 
-    date = datetime.date(year, 1, 1)
-    end_date = datetime.datetime.combine(datetime.date(year, 12, 31), datetime.datetime.max.time())
+    date = datetime.date(years[0], 1, 1)
+    end_date = datetime.datetime.combine(datetime.date(years[-1], 12, 31), datetime.datetime.max.time())
 
     df = df.sort_values(by=['Longitude//Longitude', 'Latitude//Latitude'])
     station_ids = {row_id: idx for idx, row_id in enumerate(df['NAPS ID//Identifiant SNPA'].unique())}
 
     pm25_columns = [f"{station_id}_PM25" for station_id in station_ids.keys()]
-    fire_proximity_columns = [f"{station_id}_FireProximity" for station_id in station_ids.keys()]
-    columns = pm25_columns + fire_proximity_columns
+    #fire_proximity_columns = [f"{station_id}_FireProximity" for station_id in station_ids.keys()]
+    #columns = pm25_columns + fire_proximity_columns
+    columns = pm25_columns
 
     date_range = pd.date_range(start=date, end=end_date, freq='h')  # hourly timestamps for the entire year
     pm25_df = pd.DataFrame(index=date_range, columns=columns)
@@ -192,11 +199,11 @@ def feature_data_frame(year):
         #fire_proximity = nfdb.find_closest(naps.coords(row), timestamp)
 
         # Calculate fire proximity only for fires active at this timestamp
-        fire_proximity = nfdb.find_closest_active_fire(
-            [row['Latitude//Latitude'], row['Longitude//Longitude']],
-            row['DateTime']
-        )
-        fire_proximity = round(fire_proximity)
+        #fire_proximity = nfdb.find_closest_active_fire(
+        #    [row['Latitude//Latitude'], row['Longitude//Longitude']],
+        #    row['DateTime']
+        #)
+        #fire_proximity = round(fire_proximity)
 
         for i in range(1, 25):
             timestamp = row['DateTime'] + datetime.timedelta(hours=i - 1)
@@ -204,7 +211,7 @@ def feature_data_frame(year):
             last = pm25
 
             pm25_df.loc[timestamp, f"{row_id}_PM25"] = pm25
-            pm25_df.loc[timestamp, f"{row_id}_FireProximity"] = fire_proximity
+            #pm25_df.loc[timestamp, f"{row_id}_FireProximity"] = fire_proximity
 
         if index % 1000 == 0:
             print(index)
@@ -227,11 +234,9 @@ def main():
         #training_data.loc[i] = new_train
     #print(training_data)
 
-    df = feature_data_frame(2021)
+    df = feature_data_frame([2020, 2021])
     print(df)
-    df.to_csv('./data_cache/station_features.csv')
+    df.to_csv('./data_cache/station_features_v2.csv')
 
-
-    
 if __name__ == '__main__':
     main()
