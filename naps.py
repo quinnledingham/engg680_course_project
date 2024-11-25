@@ -69,7 +69,7 @@ class Naps:
         
         return ids
 
-    def data(self, day=0, month=0, year=0):
+    def data(self, year):
         local_path = f"./data_cache/naps/PM2.5_{year}.csv"
     
         # check local store
@@ -80,6 +80,9 @@ class Naps:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             }
             response = req.get(url, headers=headers)
+
+            if response.status_code != 200:
+                print(f"Couldn't find {year}")
             assert response.status_code == 200
 
             #with open(f'{year}.csv', 'w', encoding="utf-8") as file:
@@ -90,50 +93,89 @@ class Naps:
         df = pd.read_csv(local_path)
         return df            
 
-    def get_year(self, year):
-        max = 0
-        df = self.data(year=year)
-        
-        pm25_data = []
-        station_data = []
-        station_ids = {}
-        num = 0
-        
-        for index, row in df.iterrows():
-            row_id = row['NAPS ID//Identifiant SNPA']
-
-            if row_id not in station_ids:
-                station_ids[row_id] = num
-                num += 1
-
-            for i in range(1, 25):
-                pm25 = Naps.PM25(row, i)
-                if pm25 > max:
-                    max = pm25
-                pm25_data.append(pm25)
-
-                station_data.append(row_id)   
-
-        print(f"Max PM2.5: {max}")
-        return pm25_data, station_data, station_ids
-    
     def get_years(self, years):
-        pm25_total = []
-        stn_total = []
-        stn_ids_total = {}
+        years.sort()
+
+        station_sets = []
         for year in years:
-            pm25, stn, stn_ids = self.get_year(year)
-            pm25_total += pm25
-            stn_total += stn
+            df = self.data(year)
+            stations = set(df['NAPS ID//Identifiant SNPA'].unique())
+            station_sets.append(stations)
+        
+        # Find intersection of all station sets
+        common_stations = set.intersection(*station_sets)
 
-            # Merge dicts
-            num = len(stn_ids_total)
-            for id in stn_ids:
-                if id not in stn_ids_total:
-                    stn_ids_total[id] = num
-                    num += 1
+        dfs = []
+        for year in years:
+            df = self.data(year)
+            df = df[df['NAPS ID//Identifiant SNPA'].isin(common_stations)]
+            df = df.sort_values(by=['Longitude//Longitude', 'Latitude//Latitude'])
+            dfs.append(df)
 
-        return pm25_total, stn_total, stn_ids_total
+        combined_df = pd.concat(dfs, ignore_index=True)
+        self.df = combined_df
+
+    def find_missing_stations(self, years):
+        year_stations = {}
+        all_stations = set()
+        
+        for year in sorted(years):
+            df = self.data(year)
+            stations = set(df['NAPS ID//Identifiant SNPA'].unique())
+            year_stations[year] = stations
+            all_stations.update(stations)
+        
+        # Find stations missing in each year
+        missing_by_year = {
+            year: all_stations - stations 
+            for year, stations in year_stations.items()
+        }
+        
+        # Find stations not present in all years
+        stations_in_all_years = set.intersection(*year_stations.values())
+        inconsistent_stations = all_stations - stations_in_all_years
+        
+        # Create detailed presence map
+        station_presence = {}
+        for station in all_stations:
+            presence = {
+                year: station in year_stations[year]
+                for year in years
+            }
+            if not all(presence.values()):  # Only include if not in all years
+                station_presence[station] = presence
+        
+        return {
+            'all_stations': sorted(list(all_stations)),
+            'stations_in_all_years': sorted(list(stations_in_all_years)),
+            'inconsistent_stations': sorted(list(inconsistent_stations)),
+            'missing_by_year': {
+                year: sorted(list(stations))
+                for year, stations in missing_by_year.items()
+            },
+            'station_presence_map': station_presence
+        }
+
+    def print_station_analysis(self, years):
+        analysis = self.find_missing_stations(years)
+        
+        print(f"Total unique stations: {len(analysis['all_stations'])}")
+        print(f"Stations present in all years: {len(analysis['stations_in_all_years'])}")
+        print(f"Stations with inconsistent presence: {len(analysis['inconsistent_stations'])}\n")
+        
+        print("Missing stations by year:")
+        for year, missing in analysis['missing_by_year'].items():
+            if missing:
+                print(f"{year}: {len(missing)} stations missing")
+        
+        print("\nDetailed presence map for inconsistent stations:")
+        for station, presence in analysis['station_presence_map'].items():
+            years_present = [year for year, present in presence.items() if present]
+            years_missing = [year for year, present in presence.items() if not present]
+            
+            print(f"\nStation {station}:")
+            print(f"  Present in: {', '.join(map(str, years_present))}")
+            print(f"  Missing in: {', '.join(map(str, years_missing))}")
 
     @classmethod
     def get_station_table(self):
