@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 #import intel_extension_for_pytorch as ipex
 
@@ -10,6 +11,7 @@ import pickle
 import numpy as np
 import time
 import math
+from sklearn.metrics import r2_score
 
 from input import Input_Data, stations_in_batch, num_of_features
 
@@ -18,7 +20,8 @@ start_time = time.time()
 #%%
 # hyperparameters
 batch_size = 64 # how many independent sequences will we process in parallel?
-block_size = 256 # what is the maximum context length for predictions?
+block_size = 36 # what is the maximum context length for predictions?
+target_size = 12
 max_iters = 5000
 eval_interval = 500
 eval_iters = 200
@@ -110,6 +113,19 @@ class Block(nn.Module):
         x = x + self.ffwd(self.ln2(x))
         return x 
 
+def sinusoidal_position_embedding(seq_len, dim):
+    # Initialize the position and dimension terms
+    position = torch.arange(seq_len, dtype=torch.float, device=device).unsqueeze(1)  # (seq_len, 1)
+    div_term = torch.exp(torch.arange(0, dim, 2, dtype=torch.float, device=device) * 
+                        -(math.log(10000.0) / dim))  # (dim // 2)
+
+    # Compute sinusoidal embeddings
+    sinusoidal_embedding = torch.zeros(seq_len, dim, device=device)
+    sinusoidal_embedding[:, 0::2] = torch.sin(position * div_term)  # Even indices: sine
+    sinusoidal_embedding[:, 1::2] = torch.cos(position * div_term)  # Odd indices: cosine
+
+    return sinusoidal_embedding
+
 class PM25TransformerModel(nn.Module):
 
     def __init__(self, data):
@@ -120,14 +136,10 @@ class PM25TransformerModel(nn.Module):
         self.pm25_max = data.pm25_max
         self.num_of_stations = data.num_of_stations
 
-        self.pm25_projection = nn.Linear(1, n_embd)
-        #self.hour_embedding_table = nn.Embedding(24, n_embd)
-        #self.day_embedding_table = nn.Embedding(365, n_embd)
-        #self.station_embedding = nn.Embedding(self.num_of_stations, n_embd)
-        #self.fire_embedding = nn.Embedding(10, n_embd)
-        #self.cross_station_projection = nn.Linear(self.num_of_stations-stations_in_batch, n_embd, device=device)
+        self.pm25_projection = nn.Linear(self.num_of_stations, n_embd)
 
-        #self.encoder_blocks = nn.Sequential(*[EncoderBlock(n_embd, n_head=n_head) for _ in range(n_layer)])
+        self.station_embedding = nn.Embedding(self.num_of_stations, n_embd)
+        self.fire_embedding = nn.Embedding(10, n_embd)
 
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
@@ -137,78 +149,69 @@ class PM25TransformerModel(nn.Module):
             nn.Sigmoid()
         )
 
-        self.criterion = nn.MSELoss()
+        self.mse_loss = nn.MSELoss()
 
     def forward(self, idx):
-        idx, targets, ix, stn_ix, other = idx
+        idx, targets, ix, stn_ix = idx
 
-        #station_range = stn_ix.repeat(int(block_size / stations_in_batch))
-
-        #start_hours = torch.remainder(ix, 24)
-        start_days = torch.div(ix, 24, rounding_mode="floor")
-
-        #hour_ranges = torch.stack([pos_range[h:idx.shape[1]+h] for h in start_hours])
-        #day_ranges = torch.stack([day_range[d:idx.shape[1]+d] for d in start_days])
+        B, T, S, _ = idx.shape
 
         pm25, fire = torch.split(idx, 1, dim=-1)
 
+        pm25 = pm25.view(B, T, S)
         pm25_emb = self.pm25_projection(self.normalize(pm25.float())) # (B, T, n_embd)
-        #hour_emb = self.hour_embedding_table(torch.arange(idx.shape[1], device=device))
-        pos_emb = self.sinusoidal_position_embedding(idx.shape[1], n_embd)
-        #hour_emb = self.hour_embedding_table(hour_ranges)
-        #day_emb = self.day_embedding_table(day_ranges)
-        #stn_emb = self.station_embedding(station_range[0:idx.shape[1]])
-        #fire_emb = self.fire_embedding(fire.squeeze(-1))
 
-        x = pm25_emb + pos_emb # (B,T,C)
+        fire = fire[:, :, stn_ix, :]
+        fire = fire.view(B, T)
+        fire_emb = self.fire_embedding(fire)
 
-        x, _ = self.blocks(x) # (B,T,C)
+        spatial_emb = self.station_embedding(stn_ix)  # (B, S, n_embd)
+        spatial_emb = spatial_emb.expand(B, T, n_embd)
+        
+        pos_emb = sinusoidal_position_embedding(T, n_embd)
+
+        x = pm25_emb + fire_emb + spatial_emb + pos_emb
+
+        x = self.blocks(x)
         x = self.ln_f(x) # (B,T,C)
         logits = self.lm_head(x) # (B,T,1)
 
-        loss = None
+        mse_loss = None
+        r2 = None
         if targets is not None:
             targets, _ = torch.split(targets, 1, dim=-1)
-            loss = self.criterion(logits, self.normalize(targets.float()))
+            norm_targets = self.normalize(targets.float())
+            mse_loss = self.mse_loss(logits, norm_targets)
+            r2 = r2_score(targets.detach().cpu().numpy().flatten(), self.denormalize(logits).detach().cpu().numpy().flatten())
 
-        return self.denormalize(logits), loss
-
-    def sinusoidal_position_embedding(self, seq_len, dim):
-        # Initialize the position and dimension terms
-        position = torch.arange(seq_len, dtype=torch.float, device=device).unsqueeze(1)  # (seq_len, 1)
-        div_term = torch.exp(torch.arange(0, dim, 2, dtype=torch.float, device=device) * 
-                            -(math.log(10000.0) / dim))  # (dim // 2)
-
-        # Compute sinusoidal embeddings
-        sinusoidal_embedding = torch.zeros(seq_len, dim, device=device)
-        sinusoidal_embedding[:, 0::2] = torch.sin(position * div_term)  # Even indices: sine
-        sinusoidal_embedding[:, 1::2] = torch.cos(position * div_term)  # Odd indices: cosine
-
-        return sinusoidal_embedding
+        return self.denormalize(logits), mse_loss, r2
 
     def generate(self, idx, max_new_tokens):
-        generated_values = torch.tensor([0] * max_new_tokens)
-
-        x, targets, ix, stn_ix, other = idx
+        x, targets, ix, stn_ix = idx
+        B, T, S, _ = x.shape
+        predictions = []
 
         # idx is (B, T) array of indices in the current context
-        for i in range(max_new_tokens):
-            # get the predictions
-            logits, loss = self((x, None, ix, stn_ix, other))
-            # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
+        with torch.no_grad():
+            for i in range(max_new_tokens):
+                # get the predictions
+                logits, loss, r2 = self((x, None, ix, stn_ix))
+                # focus only on the last time step
+                logits = logits[:, -1, :] # becomes (B, C)
+                next_pred_station = logits
 
-            values = logits
-            generated_values[i] = values.round().int().flatten()
+                predictions.append(next_pred_station)
 
-            next_input = values.unsqueeze(2).repeat(1, 1, 2)
+                next_pred_expanded = next_pred_station.repeat(1, S, 2)
+                next_pred_expanded = next_pred_expanded.view(B, 1, S, 2)
 
-            #next_input[:, :, 0] = targets[:, i, 0]
-            next_input[:, :, 1] = targets[:, i, 1] # set fire proximity
+                next_pred_expanded[:, :, :, 1] = targets[:, i, 1].unsqueeze(1).unsqueeze(2).repeat(1, 1, 210)
 
-            x = torch.cat((x, next_input.round().int()), dim=1)
+                idx = torch.cat([x[:, 1:, :, :], next_pred_expanded], dim=1)
 
-        return generated_values
+        predictions = torch.cat(predictions, dim=1)  # Combine along the sequence dimension (time steps)
+
+        return predictions
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -232,11 +235,13 @@ def estimate_loss(model, data):
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
+        r2_losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            batch = data.get_batch(split, batch_size, block_size, device)
-            logits, loss = model(batch)
+            batch = data.get_batch(split, batch_size, block_size, target_size, device)
+            logits, loss, r2 = model(batch)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+            r2_losses[k] = r2
+        out[split] = [losses.mean(), r2_losses.mean()]
     model.train()
     return out
 
@@ -264,21 +269,19 @@ def main():
         if iter % eval_interval == 0 or iter == max_iters - 1:
             losses = estimate_loss(model, data)
             losses_total.append(losses)
-            print(f"step {iter}: train loss {losses['train']:.8f}, val loss {losses['val']:.8f}, time {time.time() - start_time}")
+            print(f"step {iter}: train loss {losses['train'][0]:.8f}, val loss {losses['val'][0]:.8f}, time {time.time() - start_time}")
 
         # sample a batch of data
-        batch = data.get_batch('train', batch_size, block_size, device)
+        batch = data.get_batch('train', batch_size, block_size, target_size, device)
 
         # evaluate the loss
-        logits, loss = model(batch)
+        logits, loss, r2 = model(batch)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
         #scheduler.step(loss)
 
-
-    torch.save(model.state_dict(), "./data_cache/five_years.model")
-    return losses_total
+    return model, losses_total
 
 if __name__ == '__main__':
     main()

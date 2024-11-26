@@ -87,7 +87,7 @@ class Input_Data:
 
         return selected, not_selected
 
-    def get_batch(self, split, batch_size, block_size, device):
+    def get_batch(self, split, batch_size, block_size, target_size, device):
         if split == 'train':
             data = self.train
         elif split == 'val':
@@ -95,17 +95,37 @@ class Input_Data:
         elif split == 'test':
             data = self.test
 
-        ix = torch.randint(len(data) - block_size - 24, (batch_size,))
-        stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+        ix = torch.randint(len(data) - block_size - target_size, (batch_size,))
+        stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,)) 
         stn_indices = torch.arange(stn_ix.item(), stn_ix.item() + stations_in_batch)
         
         x = torch.stack([data[i:i+block_size] for i in ix],)
         y = torch.stack([data[i+1:i+block_size+1] for i in ix])
 
-        x, other = self.select(x, stn_indices)
+        #x, other = self.select(x, stn_indices)
         y, _ = self.select(y, stn_indices)
 
-        return (x.to(device), y.to(device), ix, stn_ix.to(device), other.to(device))
+        return (x.to(device), y.to(device), ix, stn_ix.to(device))
+    
+    def get_batch_target(self, split, batch_size, block_size, target_size, device):
+        if split == 'train':
+            data = self.train
+        elif split == 'val':
+            data = self.val
+        elif split == 'test':
+            data = self.test
+
+        ix = torch.randint(len(data) - block_size - target_size, (batch_size,))
+        stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,)) 
+        stn_indices = torch.arange(stn_ix.item(), stn_ix.item() + stations_in_batch)
+        
+        x = torch.stack([data[i:i+block_size] for i in ix],)
+        y = torch.stack([data[i+block_size:i+block_size+target_size] for i in ix])
+
+        #x, other = self.select(x, stn_indices)
+        y, _ = self.select(y, stn_indices)
+
+        return (x.to(device), y.to(device), ix, stn_ix.to(device))
 
     def get_block(self, split, hours, block_size, device, ix=None, stn_ix=None):
         if split == 'train':
@@ -124,13 +144,13 @@ class Input_Data:
         y = torch.stack([data[i+split:i+block_size] for i in ix])
 
         if stn_ix is None:
-            stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))  # Ensure we have room for 10 stations
+            stn_ix = torch.randint(self.num_of_stations - (stations_in_batch-1), (1,))
         stn_indices = torch.arange(stn_ix.item(), stn_ix.item() + stations_in_batch)
 
-        x, other = self.select(x, stn_indices)
+        #x, other = self.select(x, stn_indices)
         y, _ = self.select(y, stn_indices)
 
         #print(f"{ix.item()}, {stn_ix.item()}")
 
-        return (x.to(device), y.to(device), ix, stn_ix.to(device), other.to(device))
+        return (x.to(device), y.to(device), ix, stn_ix.to(device))
     
