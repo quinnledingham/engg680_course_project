@@ -48,7 +48,7 @@ To set up the project environment:
 
 **Clone the repository:**
 
-git clone https://github.com/yourusername/predicting-wildfires-pm25.git
+git clone https://github.com/MuhammadAyan-Khan/predicting-wildfires-pm25.git
 
 **Navigate to the project directory:**
 
