@@ -68,7 +68,7 @@ python prepare_data.py
 
 **Model Training:**
 
-Run cells in train.ipynb
+Run cells in train.ipynb or python stt.py
 
 **Predicting PM2.5 Levels:**
 

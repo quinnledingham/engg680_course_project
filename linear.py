@@ -11,7 +11,7 @@ import math
 from sklearn.metrics import r2_score
 
 from input import Input_Data, stations_in_batch, num_of_features
-from gpt import estimate_loss, target_size, sinusoidal_position_embedding
+from stt import estimate_loss, target_size, sinusoidal_position_embedding
 
 start_time = time.time()
 
