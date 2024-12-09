@@ -34,7 +34,7 @@ _This project aims to predict PM2.5 levels driven by wildfires using spatiotempo
 
 ├── linear.py                     # Linear model and related functions
 
-├── main.py                       # Main script for various operations
+├── prepare_data.py               # Prepares data for training
 
 ├── naps.py                       # NAPS related functions
 
@@ -48,11 +48,11 @@ To set up the project environment:
 
 **Clone the repository:**
 
-git clone https://github.com/MuhammadAyan-Khan/predicting-wildfires-pm25.git
+git clone https://github.com/quinnledingham/engg680_course_project.git
 
 **Navigate to the project directory:**
 
-cd predicting-wildfires-pm25
+cd engg680_course_project
 
 **Install the dependencies:**
 
@@ -64,15 +64,15 @@ To run the project:
 
 **Data Preprocessing:**
 
-python src/data_preprocessing/prepare_data.py
+python prepare_data.py
 
 **Model Training:**
 
-python src/models/train_model.py
+Run cells in train.ipynb
 
 **Predicting PM2.5 Levels:**
 
-python src/models/predict_pm25.py
+Run cells in eval.ipynb
 
 _Training: 
 The train.ipynb notebook is used for training the Spatiotemporal Transformer model and the Linear model. The models are trained on five years of data, and the trained models and their losses are saved for future evaluation._
